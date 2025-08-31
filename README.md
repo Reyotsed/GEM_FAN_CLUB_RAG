@@ -1,4 +1,4 @@
-# GEM Fan Club RAG
+push # GEM Fan Club RAG
 
 这是一个基于RAG（Retrieval-Augmented Generation）技术的GEM粉丝俱乐部问答系统。
 
