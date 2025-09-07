@@ -1,4 +1,5 @@
 # get_lyrics.py
+# -*- coding: utf-8 -*-
 from pyncm import apis
 import re
 import os
@@ -56,25 +57,49 @@ def generate_rag_data(song_name, lyric):
     return data
 
 
+def get_song_id_list():
+    file_path = "./hot_song.json"
+    import json
+    song_id_list = []
+    try:
+        with open(file_path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            # 假设json结构为 {"songs": [ {...}, {...}, ... ]}
+            for song in data.get("songs", []):
+                song_id = song.get("songId")
+                if song_id:
+                    song_id_list.append(song_id)
+    except Exception as e:
+        print(f"读取歌曲ID列表时发生错误: {e}")
+    return song_id_list
+    
+    
 
 if __name__ == '__main__':
-    # 以邓紫棋的《光年之外》为例，ID是 448317375
-    gem_song_id = 2083785152
-    
-    results = fetch_lyrics_from_netease(gem_song_id)
-    
-    if results:
-        lyric = results['clean']
-        song_name = results['song_name']
+    gem_song_id_list = get_song_id_list()
 
-        print(f"歌曲名: {song_name}")
-        print(f"歌词: {lyric}")
+    for gem_song_id in gem_song_id_list:
+        
+        results = fetch_lyrics_from_netease(gem_song_id)
+        
+        if results:
+            lyric = results['clean']
+            song_name = results['song_name']
 
-        data = generate_rag_data(song_name, lyric)
-        print(f"RAG数据: {data}")
+            # 检查歌词文件是否已存在，若存在则跳过
+            lyric_file_path = f"gem_data/lyrics/{song_name}.txt"
+            if os.path.exists(lyric_file_path):
+                print(f"已存在歌词文件: {lyric_file_path}，跳过。")
+                continue
 
-        if not os.path.exists(f"gem_data/lyrics"):
-            os.makedirs(f"gem_data/lyrics")
-        with open(f"gem_data/lyrics/lyric_{gem_song_id}.txt", "w", encoding="utf-8") as f:
-            f.write(data)
-        print(f"\n歌词已保存到 gem_data/lyrics/lyrics_{gem_song_id}.txt")
+            print(f"歌曲名: {song_name}")
+            print(f"歌词: {lyric}")
+
+            data = generate_rag_data(song_name, lyric)
+            print(f"RAG数据: {data}")
+
+            if not os.path.exists(f"gem_data/lyrics"):
+                os.makedirs(f"gem_data/lyrics")
+            with open(f"gem_data/lyrics/{song_name}.txt", "w", encoding="utf-8") as f:
+                f.write(data)
+            print(f"\n歌词已保存到 gem_data/lyrics/{song_name}.txt")

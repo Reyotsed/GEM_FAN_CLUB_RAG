@@ -1,1 +1,24 @@
+# Web框架
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+python-multipart==0.0.20
+# 数据验证
+pydantic==2.10.4
+# LangChain生态系统 (使用兼容版本)
+langchain==0.3.27
+langchain-community==0.3.27
+langchain-chroma==0.2.5
+# 向量数据库
+chromadb==1.0.20
+# 智谱AI
+zhipuai==2.1.5.20250825
 
+# 其他依赖
+pathlib2==2.3.7; python_version < "3.4"
+# 文档处理依赖
+python-docx==1.2.0
+# 开发依赖（可选）
+pytest==7.4.4
+pytest-asyncio==0.21.1
+# 可选依赖（用于歌词获取脚本）
+pyncm==1.7.1
