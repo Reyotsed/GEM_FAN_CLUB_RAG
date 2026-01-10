@@ -17,7 +17,7 @@ class HybridRetriever:
     RRF是一种更科学的重排序方法，能够更好地融合不同检索系统的结果
     """
     
-    def __init__(self, vector_retriever, bm25_retriever, num_results: int = 3):
+    def __init__(self, vector_retriever, bm25_retriever, num_results: int = 3, rrf_k: int = 60):
         """
         初始化混合检索器
         
@@ -25,10 +25,12 @@ class HybridRetriever:
             vector_retriever: 向量检索器
             bm25_retriever: BM25检索器
             num_results: 返回的结果数量
+            rrf_k: RRF (Reciprocal Rank Fusion) 常数，默认60
         """
         self.vector_retriever = vector_retriever
         self.bm25_retriever = bm25_retriever
         self.num_results = num_results
+        self.rrf_k = rrf_k
     
     def retrieve(self, query: str, vector_query: str = None, bm25_query: str = None) -> List[Document]:
         """
@@ -89,18 +91,17 @@ class HybridRetriever:
         
         # 计算RRF分数
         scored_docs = []
-        k = 60  # RRF常数，通常设为60
         
         for doc_info in doc_map.values():
             rrf_score = 0.0
             
             # 计算向量检索的RRF分数
             if doc_info['vector_rank'] is not None:
-                rrf_score += 1.0 / (k + doc_info['vector_rank'])
+                rrf_score += 1.0 / (self.rrf_k + doc_info['vector_rank'])
             
             # 计算BM25检索的RRF分数
             if doc_info['bm25_rank'] is not None:
-                rrf_score += 1.0 / (k + doc_info['bm25_rank'])
+                rrf_score += 1.0 / (self.rrf_k + doc_info['bm25_rank'])
             
             # 添加RRF分数到元数据
             doc = doc_info['doc']
