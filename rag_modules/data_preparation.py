@@ -136,151 +136,68 @@ class DataPreparationModule:
 
 
     def _text_splitter(self) -> List[Document]:
+        """
+        统一使用 AdaptiveSplitter 处理所有文档的分块
+        """
         all_chunks = []
 
         for doc in self.documents:
-            # 检查是否是JSON文件
+            parent_id = doc.metadata["parent_id"]
+            
+            # 检查是否是JSON文件（演唱会数据）
             if doc.metadata.get('file_type') == 'json':
-                # 处理JSON格式的演唱会数据
-                json_chunks = self._split_json_concert(doc)
-                all_chunks.extend(json_chunks)
-            else:
-                # 处理TXT文件
-                type_map = {
-                    '生涯': 'career',
-                    '演唱会': 'concert',
-                    '歌曲': 'lyrics',
-                }
-                # 使用自适应分块器根据文档类型进行分割
-                doc_type = type_map.get(doc.metadata.get('category', '其他'), '其他')
-                md_chunks = self.adaptive_splitter.split_document(doc.page_content, doc_type)
-
+                # 使用 AdaptiveSplitter 处理 JSON 格式的演唱会数据
+                json_chunks = self.adaptive_splitter.split_json_concert(doc)
+                
                 # 为每个子块建立与父文档的关系
-                parent_id = doc.metadata["parent_id"]
-
-                for i, chunk in enumerate(md_chunks):
-                    # 为子块分配唯一ID并建立父子关系
+                for chunk in json_chunks:
                     child_id = str(uuid.uuid4())
-                    chunk.metadata.update(doc.metadata)
                     chunk.metadata.update({
                         "chunk_id": child_id,
                         "parent_id": parent_id,
-                        "doc_type": "child",  # 标记为子文档
-                        "chunk_index": i      # 在父文档中的位置
+                        "doc_type": "child",
                     })
-
                     # 建立父子映射关系
                     self.parent_child_map[child_id] = parent_id
+                
+                all_chunks.extend(json_chunks)
+            else:
+                # 处理TXT文件（生涯、歌词）
+                type_map = {
+                    '生涯': 'career',
+                    '歌曲': 'lyrics',
+                }
+                doc_type = type_map.get(doc.metadata.get('category', '其他'), '其他')
+                
+                # 准备元数据，传递给分块器
+                base_metadata = {
+                    "parent_id": parent_id,
+                    "doc_type": "child",
+                    "source": doc.metadata.get('source', ''),
+                    "category": doc.metadata.get('category', '其他'),
+                }
+                
+                # 使用自适应分块器根据文档类型进行分割
+                md_chunks = self.adaptive_splitter.split_document(
+                    doc.page_content, 
+                    doc_type,
+                    metadata=base_metadata
+                )
+
+                # 为每个子块分配唯一ID并建立父子关系
+                for i, chunk in enumerate(md_chunks):
+                    child_id = str(uuid.uuid4())
+                    chunk.metadata.update({
+                        "chunk_id": child_id,
+                        "chunk_index": i  # 在父文档中的位置
+                    })
+                    # 建立父子映射关系
+                    self.parent_child_map[child_id] = parent_id
+                
                 all_chunks.extend(md_chunks)
 
         return all_chunks
     
-    def _split_json_concert(self, doc: Document) -> List[Document]:
-        """
-        处理JSON格式的演唱会数据
-        每个场次作为一个独立的chunk
-        """
-        chunks = []
-        try:
-            # 解析JSON内容
-            json_data = json.loads(doc.page_content)
-            
-            # 获取演唱会名称
-            concert_name = doc.metadata.get('concert_name', '')
-            if not concert_name:
-                # 从文件名提取
-                file_path = Path(doc.metadata.get('source', ''))
-                concert_name = file_path.stem.replace('.json', '')
-            
-            parent_id = doc.metadata["parent_id"]
-            
-            # 确保json_data是列表
-            if not isinstance(json_data, list):
-                json_data = [json_data]
-            
-            # 为每个场次创建一个chunk
-            for i, concert_item in enumerate(json_data):
-                # 过滤掉created_at和updated_at字段
-                filtered_item = {k: v for k, v in concert_item.items() 
-                               if k not in ['created_at', 'updated_at']}
-                
-                # 构建文本内容 - 优化格式，增强关键词匹配
-                # 在开头就突出城市和日期信息，提高检索匹配度
-                city = filtered_item.get('city', '')
-                concert_date = filtered_item.get('concert_date', '')
-                
-                # 构建更丰富的文本内容，增强语义匹配
-                content_parts = []
-                
-                # 开头就包含关键信息，提高检索匹配度
-                if city:
-                    content_parts.append(f"邓紫棋{city}演唱会")
-                    content_parts.append(f"{city}站演唱会")
-                if concert_date:
-                    content_parts.append(f"{city}演唱会时间: {concert_date}")
-                
-                content_parts.append(f"I AM Gloria 巡回演唱会场次")
-                
-                # 添加场次信息
-                if 'sequence_range' in filtered_item:
-                    content_parts.append(f"场次编号: {filtered_item['sequence_range']}")
-                if 'tour_phase' in filtered_item:
-                    content_parts.append(f"巡演阶段: {filtered_item['tour_phase']}")
-                if concert_date:
-                    content_parts.append(f"演出日期: {concert_date}")
-                if 'country' in filtered_item:
-                    content_parts.append(f"国家/地区: {filtered_item['country']}")
-                if city:
-                    content_parts.append(f"城市: {city}")
-                    # 重复城市名，增强匹配
-                    content_parts.append(f"演出城市: {city}")
-                if 'venue' in filtered_item:
-                    venue = filtered_item['venue'].strip()
-                    content_parts.append(f"场地: {venue}")
-                    # 如果场地名包含城市名，也添加
-                    if city and city in venue:
-                        content_parts.append(f"{city}演唱会场地: {venue}")
-                if 'notes' in filtered_item and filtered_item['notes']:
-                    content_parts.append(f"备注: {filtered_item['notes']}")
-                if 'estimated_audience' in filtered_item and filtered_item['estimated_audience']:
-                    content_parts.append(f"预计观看人次: {filtered_item['estimated_audience']}")
-                if 'status' in filtered_item:
-                    content_parts.append(f"状态: {filtered_item['status']}")
-                
-                content = "\n".join(content_parts)
-                
-                # 创建chunk
-                child_id = str(uuid.uuid4())
-                chunk = Document(
-                    page_content=content,
-                    metadata={
-                        "chunk_id": child_id,
-                        "parent_id": parent_id,
-                        "doc_type": "child",
-                        "chunk_index": i,
-                        "chunk_type": "concert_session",  # 场次类型
-                        "source": doc.metadata.get('source', ''),
-                        "category": "演唱会",
-                        "concert_name": concert_name,
-                        "session_id": filtered_item.get('id'),
-                        "sequence_range": filtered_item.get('sequence_range', ''),
-                        "tour_phase": filtered_item.get('tour_phase', ''),
-                        "city": filtered_item.get('city', ''),
-                        "venue": filtered_item.get('venue', ''),
-                        "concert_date": filtered_item.get('concert_date', ''),
-                    }
-                )
-                
-                # 建立父子映射关系
-                self.parent_child_map[child_id] = parent_id
-                chunks.append(chunk)
-                
-        except json.JSONDecodeError as e:
-            print(f"JSON解析错误: {doc.metadata.get('source', '')} - {str(e)}")
-        except Exception as e:
-            print(f"处理JSON文件时出错: {doc.metadata.get('source', '')} - {str(e)}")
-        
-        return chunks
 
     
     def get_parent_documents(self, child_chunks: List[Document]) -> List[Document]:
@@ -328,7 +245,11 @@ class DataPreparationModule:
             print("已删除旧数据库，将重新创建。")
         
         # 使用智谱的Embedding模型
-        embeddings = ZhipuAIEmbeddings(api_key=config.ZHIPUAI_API_KEY)
+        # 注意：需要指定 model 参数，智谱AI的embedding模型通常是 "embedding-2"
+        embeddings = ZhipuAIEmbeddings(
+            api_key=config.ZHIPUAI_API_KEY,
+            model=config.ZHIPUAI_EMBEDDING_MODEL  # 从配置读取embedding模型
+        )
         
         # 分批处理文档，避免超过智谱AI的64条限制
         batch_size = config.VECTOR_DB_BATCH_SIZE  # 从配置读取批次大小

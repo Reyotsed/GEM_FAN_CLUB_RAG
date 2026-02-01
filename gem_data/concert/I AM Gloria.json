@@ -856,43 +856,15 @@
   {
     "id": 64,
     "tour_phase": "第五轮 Part 5 2.0版本",
-    "sequence_range": "未官宣",
-    "concert_date": "2026年月日",
-    "country": "中国大陆",
-    "city": "汕头",
-    "venue": "汕头体育中心体育场",
-    "notes": null,
-    "estimated_audience": null,
-    "status": "未官宣",
-    "created_at": "4/4/2025 16:38:39",
-    "updated_at": "10/1/2026 19:26:13"
-  },
-  {
-    "id": 65,
-    "tour_phase": "第五轮 Part 5 2.0版本",
-    "sequence_range": "未官宣",
-    "concert_date": "2026年月日",
+    "sequence_range": "150-152",
+    "concert_date": "2026年4月10-12日",
     "country": "中国台湾",
-    "city": "深圳",
-    "venue": "深圳湾体育中心体育场",
+    "city": "台北",
+    "venue": "台北大巨蛋",
     "notes": null,
     "estimated_audience": null,
-    "status": "未官宣",
+    "status": "已确定",
     "created_at": "4/4/2025 16:38:39",
-    "updated_at": "29/10/2025 21:24:33"
-  },
-  {
-    "id": 66,
-    "tour_phase": "第五轮 Part 5 2.0版本",
-    "sequence_range": "未官宣",
-    "concert_date": "2026年月日",
-    "country": "中国大陆",
-    "city": "长沙",
-    "venue": "贺龙体育中心体育场",
-    "notes": null,
-    "estimated_audience": null,
-    "status": "未官宣",
-    "created_at": "4/4/2025 16:38:39",
-    "updated_at": "29/10/2025 21:24:41"
+    "updated_at": "1/2/2026 16:00:12"
   }
 ]

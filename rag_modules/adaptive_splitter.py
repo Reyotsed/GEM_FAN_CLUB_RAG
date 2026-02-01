@@ -3,17 +3,23 @@
 """
 自适应文档分块器
 根据文档类型采用不同的分块策略
+支持 TXT 格式（生涯、歌词）和 JSON 格式（演唱会）数据
 """
 
 import re
-from typing import List
+import json
+from typing import List, Dict, Any, Optional
+from pathlib import Path
 from langchain.schema import Document
 
 
 class AdaptiveSplitter:
     """
     自适应文档分块器
-    根据文档类型（生涯、演唱会、歌词）采用不同的分块策略
+    统一处理所有类型文档的分块逻辑：
+    - 生涯数据（TXT）：按时间线和重要事件分割
+    - 歌词数据（TXT）：一首歌一个chunk
+    - 演唱会数据（JSON）：每个场次一个chunk
     """
     
     def __init__(self):
@@ -23,36 +29,182 @@ class AdaptiveSplitter:
                 "max_chunk_size": 1000,
                 "chunk_type": "career_section"
             },
-            "concert": {
-                "max_chunk_size": 800,
-                "chunk_type": "concert_info"
-            },
             "lyrics": {
                 "max_chunk_size": 600,
                 "chunk_type": "lyrics_info"
+            },
+            "concert": {
+                "max_chunk_size": 800,
+                "chunk_type": "concert_session"
             }
         }
     
-    def split_document(self, text: str, doc_type: str) -> List[Document]:
+    def split_document(self, text: str, doc_type: str, metadata: Optional[Dict[str, Any]] = None) -> List[Document]:
         """
         根据文档类型分割文档
         
         Args:
-            text: 文档内容
-            doc_type: 文档类型 ('career', 'concert', 'lyrics')
+            text: 文档内容（TXT 格式的文本）
+            doc_type: 文档类型 ('career', 'lyrics')
+            metadata: 可选的元数据，用于传递给子块
             
         Returns:
             List[Document]: 分割后的文档块列表
         """
         if doc_type == "career":
-            return self._career_splitter(text)
-        elif doc_type == "concert":
-            return self._concert_splitter(text)
+            chunks = self._career_splitter(text)
         elif doc_type == "lyrics":
-            return self._lyrics_splitter(text)
+            chunks = self._lyrics_splitter(text)
         else:
             # 默认使用通用分块策略
-            return self._default_splitter(text)
+            chunks = self._default_splitter(text)
+        
+        # 如果提供了元数据，更新所有 chunk 的元数据
+        if metadata:
+            for chunk in chunks:
+                chunk.metadata.update(metadata)
+        
+        return chunks
+    
+    def split_json_concert(self, doc: Document) -> List[Document]:
+        """
+        处理JSON格式的演唱会数据
+        每个场次作为一个独立的chunk
+        
+        Args:
+            doc: 包含 JSON 内容的 Document 对象
+            
+        Returns:
+            List[Document]: 分割后的文档块列表
+        """
+        chunks = []
+        try:
+            # 解析JSON内容
+            json_data = json.loads(doc.page_content)
+            
+            # 获取演唱会名称
+            concert_name = doc.metadata.get('concert_name', '')
+            if not concert_name:
+                # 从文件名提取
+                file_path = Path(doc.metadata.get('source', ''))
+                concert_name = file_path.stem.replace('.json', '')
+            
+            parent_id = doc.metadata.get("parent_id", "")
+            
+            # 确保json_data是列表
+            if not isinstance(json_data, list):
+                json_data = [json_data]
+            
+            # 为每个场次创建一个chunk
+            for i, concert_item in enumerate(json_data):
+                # 过滤掉created_at和updated_at字段
+                filtered_item = {k: v for k, v in concert_item.items() 
+                               if k not in ['created_at', 'updated_at']}
+                
+                # 构建文本内容
+                content = self._build_concert_content(filtered_item, concert_name)
+                
+                # 创建chunk
+                chunk = Document(
+                    page_content=content,
+                    metadata={
+                        "chunk_type": "concert_session",
+                        "parent_id": parent_id,
+                        "chunk_index": i,
+                        "source": doc.metadata.get('source', ''),
+                        "category": "演唱会",
+                        "concert_name": concert_name,
+                        "session_id": filtered_item.get('id'),
+                        "sequence_range": filtered_item.get('sequence_range', ''),
+                        "tour_phase": filtered_item.get('tour_phase', ''),
+                        "city": filtered_item.get('city', ''),
+                        "venue": filtered_item.get('venue', ''),
+                        "concert_date": filtered_item.get('concert_date', ''),
+                    }
+                )
+                
+                chunks.append(chunk)
+                
+        except json.JSONDecodeError as e:
+            raise ValueError(f"JSON解析错误: {doc.metadata.get('source', '')} - {str(e)}")
+        except Exception as e:
+            raise ValueError(f"处理JSON文件时出错: {doc.metadata.get('source', '')} - {str(e)}")
+        
+        return chunks
+    
+    def _build_concert_content(self, concert_item: Dict[str, Any], concert_name: str) -> str:
+        """
+        构建演唱会场次的文本内容
+        
+        Args:
+            concert_item: 场次数据字典
+            concert_name: 演唱会名称
+            
+        Returns:
+            str: 格式化的文本内容
+        """
+        city = concert_item.get('city', '')
+        concert_date = concert_item.get('concert_date', '')
+        venue = concert_item.get('venue', '').strip() if concert_item.get('venue') else ''
+        tour_phase = concert_item.get('tour_phase', '')
+        sequence_range = concert_item.get('sequence_range', '')
+        country = concert_item.get('country', '')
+        notes = concert_item.get('notes', '')
+        estimated_audience = concert_item.get('estimated_audience', '')
+        status = concert_item.get('status', '')
+        
+        # 构建更自然、语义化的文本内容
+        content_parts = []
+        
+        # 第一部分：核心信息（自然语言描述）
+        if city and concert_date:
+            content_parts.append(f"邓紫棋于{concert_date}在{city}举办{concert_name}演唱会")
+        elif city:
+            content_parts.append(f"邓紫棋在{city}举办{concert_name}演唱会")
+        
+        # 第二部分：详细信息（结构化描述）
+        details = []
+        if tour_phase:
+            details.append(f"巡演阶段: {tour_phase}")
+        if sequence_range:
+            details.append(f"场次编号: {sequence_range}")
+        if concert_date:
+            details.append(f"演出日期: {concert_date}")
+        if country:
+            details.append(f"国家/地区: {country}")
+        if city:
+            details.append(f"演出城市: {city}")
+        if venue:
+            details.append(f"演出场地: {venue}")
+        if estimated_audience:
+            details.append(f"预计观看人次: {estimated_audience}")
+        if notes:
+            details.append(f"备注: {notes}")
+        if status:
+            details.append(f"状态: {status}")
+        
+        if details:
+            content_parts.append("\n详细信息：")
+            content_parts.extend(details)
+        
+        # 第三部分：增强关键词匹配（用于向量检索）
+        keyword_phrases = []
+        if city:
+            keyword_phrases.extend([
+                f"{city}演唱会",
+                f"{city}站",
+                f"邓紫棋{city}演唱会",
+                f"{concert_name}{city}演唱会"
+            ])
+        if venue:
+            keyword_phrases.append(f"{venue}演唱会")
+            if city and city in venue:
+                keyword_phrases.append(f"{city}{venue}")
+        
+        if keyword_phrases:
+            content_parts.append("\n关键词: " + "、".join(keyword_phrases))
+        
+        return "\n".join(content_parts)
     
     def _career_splitter(self, text: str) -> List[Document]:
         """
@@ -103,81 +255,6 @@ class AdaptiveSplitter:
         if current_chunk.strip():
             chunks.append(self._create_chunk(current_chunk.strip(), "career_section"))
         
-        return chunks
-
-    def _concert_splitter(self, text: str) -> List[Document]:
-        """
-        演唱会文档分块器 - 按表格和重要信息分割
-        演唱会文档包含巡演信息、场次列表等，保持表格完整性
-        """
-        chunks = []
-        
-        # 按行分割，保持表格结构
-        lines = text.split('\n')
-        
-        current_chunk = ""
-        chunk_size = 0
-        max_chunk_size = self.splitter_config["concert"]["max_chunk_size"]
-        in_table = False
-        table_chunk = ""
-        
-        for line in lines:
-            line = line.strip()
-            if not line:
-                if current_chunk:
-                    current_chunk += "\n"
-                continue
-            
-            # 检查是否是表格开始
-            if self._is_table_start(line):
-                # 保存之前的非表格内容
-                if current_chunk.strip():
-                    chunks.append(self._create_chunk(current_chunk.strip(), "concert_info"))
-                    current_chunk = ""
-                
-                in_table = True
-                table_chunk = line + "\n"
-                continue
-            
-            # 检查是否是表格结束
-            if in_table and self._is_table_end(line):
-                table_chunk += line
-                chunks.append(self._create_chunk(table_chunk.strip(), "concert_table"))
-                in_table = False
-                table_chunk = ""
-                continue
-            
-            # 在表格中
-            if in_table:
-                table_chunk += line + "\n"
-                continue
-            
-            # 检查是否是重要信息段落
-            if self._is_important_concert_info(line):
-                # 保存当前块
-                if current_chunk.strip():
-                    chunks.append(self._create_chunk(current_chunk.strip(), "concert_info"))
-                    current_chunk = ""
-                
-                # 重要信息单独成块
-                chunks.append(self._create_chunk(line, "concert_highlight"))
-                continue
-            
-            # 普通内容处理
-            if chunk_size + len(line) > max_chunk_size and current_chunk:
-                chunks.append(self._create_chunk(current_chunk.strip(), "concert_info"))
-                current_chunk = line
-                chunk_size = len(line)
-            else:
-                if current_chunk:
-                    current_chunk += "\n" + line
-                else:
-                    current_chunk = line
-                chunk_size += len(line)
-        
-        # 保存最后一个块
-        if current_chunk.strip():
-            chunks.append(self._create_chunk(current_chunk.strip(), "concert_info"))
         return chunks
 
     def _lyrics_splitter(self, text: str) -> List[Document]:
@@ -271,44 +348,6 @@ class AdaptiveSplitter:
             if re.search(pattern, text):
                 return True
         return False
-
-    def _is_table_start(self, line: str) -> bool:
-        """判断是否是表格开始"""
-        table_start_patterns = [
-            r'== .* ==',  # 标题：== 巡演地點 ==
-            r'\{.*class="wikitable"',  # 表格开始
-            r'\|.*\|.*\|',  # 表格行开始
-        ]
-        
-        for pattern in table_start_patterns:
-            if re.search(pattern, line):
-                return True
-        return False
-    
-    def _is_table_end(self, line: str) -> bool:
-        """判断是否是表格结束"""
-        # 简单的表格结束判断：空行或非表格内容
-        if not line.strip():
-            return True
-        
-        # 检查是否是表格行
-        if re.search(r'\|.*\|', line):
-            return False
-        
-        return True
-
-    def _is_important_concert_info(self, text: str) -> bool:
-        """判断是否是重要演唱会信息"""
-        important_keywords = [
-            '巡演', '演唱会', '首场', '加场', '创下', '记录', '突破',
-            '体育场', '体育馆', '连开', '票房', '观看人次'
-        ]
-        
-        for keyword in important_keywords:
-            if keyword in text:
-                return True
-        return False
-
 
     def _create_chunk(self, content: str, chunk_type: str) -> Document:
         """创建文档块"""

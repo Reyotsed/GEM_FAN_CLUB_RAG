@@ -12,8 +12,11 @@ ZHIPUAI_API_KEY: str = os.getenv(
     "ZHIPUAI_API_KEY", 
     ""  # 默认值为空，强制使用环境变量
 )
-ZHIPUAI_MODEL: str = os.getenv("ZHIPUAI_MODEL", "glm-3-turbo")
-ZHIPUAI_TEMPERATURE: float = float(os.getenv("ZHIPUAI_TEMPERATURE", "0.7"))
+ZHIPUAI_MODEL: str = os.getenv("ZHIPUAI_MODEL", "glm-4.7")
+ZHIPUAI_EMBEDDING_MODEL: str = os.getenv("ZHIPUAI_EMBEDDING_MODEL", "embedding-3")
+ZHIPUAI_TEMPERATURE: float = float(os.getenv("ZHIPUAI_TEMPERATURE", "0.8"))
+# API请求超时时间（秒），glm-4.7推理时间较长，建议设置为60秒或更高
+ZHIPUAI_TIMEOUT: float = float(os.getenv("ZHIPUAI_TIMEOUT", "120"))
 
 # 验证API密钥是否已设置
 if not ZHIPUAI_API_KEY:
@@ -48,11 +51,11 @@ LOG_LEVEL_VALUE: int = LOG_LEVEL_MAP.get(LOG_LEVEL, logging.INFO)
 
 # ==================== 检索器配置 ====================
 # 向量检索器返回的文档数量
-VECTOR_RETRIEVER_K: int = int(os.getenv("VECTOR_RETRIEVER_K", "5"))
+VECTOR_RETRIEVER_K: int = int(os.getenv("VECTOR_RETRIEVER_K", "30"))
 # BM25检索器返回的文档数量
-BM25_RETRIEVER_K: int = int(os.getenv("BM25_RETRIEVER_K", "5"))
+BM25_RETRIEVER_K: int = int(os.getenv("BM25_RETRIEVER_K", "30"))
 # 混合检索器最终返回的文档数量
-HYBRID_RETRIEVER_NUM_RESULTS: int = int(os.getenv("HYBRID_RETRIEVER_NUM_RESULTS", "4"))
+HYBRID_RETRIEVER_NUM_RESULTS: int = int(os.getenv("HYBRID_RETRIEVER_NUM_RESULTS", "10"))
 # RRF (Reciprocal Rank Fusion) 常数，用于混合检索器重排序
 RRF_K: int = int(os.getenv("RRF_K", "60"))
 
