@@ -2,6 +2,7 @@ from inspect import cleandoc
 from typing import List, Dict
 import re
 import json
+import logging
 from langchain_community.document_loaders import DirectoryLoader, TextLoader
 from langchain.schema import Document
 # 导入智谱的Embedding
@@ -13,6 +14,8 @@ import uuid
 from pathlib import Path
 from .adaptive_splitter import AdaptiveSplitter
 
+logger = logging.getLogger(__name__)
+
 class DataPreparationModule:
 
     def __init__(self, data_path: str):
@@ -23,10 +26,10 @@ class DataPreparationModule:
         self.adaptive_splitter = AdaptiveSplitter()  # 自适应分块器
 
 
-    def load_data(self) -> List[Document]:
+    def load_data(self, hot_song_path: str = None) -> List[Document]:
         documents = []
         data_path_obj = Path(self.data_path)
-        print(data_path_obj)
+        logger.info(f"Loading data from: {data_path_obj}")
 
         # 加载TXT文件
         for md_file in data_path_obj.rglob("*.txt"):
@@ -72,6 +75,11 @@ class DataPreparationModule:
             )
             documents.append(doc)
 
+        # Load hot songs data if available
+        if hot_song_path:
+            hot_song_docs = self._load_hot_songs(hot_song_path)
+            documents.extend(hot_song_docs)
+
         # 增强文档元数据
         for doc in documents:
             self._enhance_metadata(doc)
@@ -83,7 +91,6 @@ class DataPreparationModule:
     def _enhance_metadata(self, doc: Document):
         """增强文档元数据"""
         file_path = Path(doc.metadata.get('source', ''))
-        path_parts = file_path.parts
 
         # 提取数据类别
         category_mapping = {
@@ -92,25 +99,62 @@ class DataPreparationModule:
             'lyrics': '歌曲'
         }
 
-        # 从文件路径推断分类
-        doc.metadata['category'] = '其他'        
-        for key, value in category_mapping.items():
-            if key in file_path.parts:
-                doc.metadata['category'] = value
-                if key != 'career':
-                    # 处理文件名，移除扩展名
-                    file_name = file_path.stem
-                    if file_name.endswith('.txt'):
-                        file_name = file_name[:-4]
-                    elif file_name.endswith('.json'):
-                        file_name = file_name[:-5]
-                    doc.metadata[key + '_name'] = file_name
-                break
+        # 从文件路径推断分类（only if not already set by the loader）
+        existing_category = doc.metadata.get('category', '')
+        if not existing_category or existing_category == '其他':
+            doc.metadata['category'] = '其他'        
+            for key, value in category_mapping.items():
+                if key in file_path.parts:
+                    doc.metadata['category'] = value
+                    if key != 'career':
+                        # Path.stem already removes extension, no need for endswith checks
+                        doc.metadata[key + '_name'] = file_path.stem
+                    break
 
+
+    def _load_hot_songs(self, hot_song_path: str) -> List[Document]:
+        """Load hot_song.json and convert it into a structured Document for RAG retrieval."""
+        hot_song_file = Path(hot_song_path)
+        if not hot_song_file.exists():
+            return []
+
+        try:
+            with open(hot_song_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, IOError):
+            return []
+
+        songs = data.get('songs', [])
+        if not songs:
+            return []
+
+        # Build a human-readable song list text
+        lines = [f"邓紫棋(G.E.M.)热门歌曲列表（共{len(songs)}首）\n"]
+        for i, song in enumerate(songs, 1):
+            title = song.get('title', '')
+            lines.append(f"{i}. {title}")
+
+        content = '\n'.join(lines)
+        parent_id = str(uuid.uuid4())
+
+        doc = Document(
+            page_content=content,
+            metadata={
+                "source": str(hot_song_file),
+                "parent_id": parent_id,
+                "doc_type": "parent",
+                "category": "歌曲",
+                "file_type": "hot_songs",
+            }
+        )
+        return [doc]
 
     def _clean_text(self, text) -> str:
-        # 移除或替换可能导致问题的字符，但保留换行符
-        text = re.sub(r'[^\w\s\u4e00-\u9fff\u3000-\u303f\uff00-\uffef\n]', ' ', text)
+        # Only remove invisible control characters (U+0000-U+001F except \n \t, U+007F, U+0080-U+009F)
+        # Preserve all normal punctuation, CJK characters, and whitespace
+        text = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f]', '', text)
+        # Normalize multiple consecutive blank lines to at most two
+        text = re.sub(r'\n{3,}', '\n\n', text)
         text = text.strip()
         return text
 
@@ -161,6 +205,23 @@ class DataPreparationModule:
                     self.parent_child_map[child_id] = parent_id
                 
                 all_chunks.extend(json_chunks)
+            elif doc.metadata.get('file_type') == 'hot_songs':
+                # Hot songs list: keep as a single chunk (small enough, no need to split)
+                child_id = str(uuid.uuid4())
+                chunk = Document(
+                    page_content=doc.page_content,
+                    metadata={
+                        "chunk_id": child_id,
+                        "parent_id": parent_id,
+                        "doc_type": "child",
+                        "chunk_type": "hot_songs_list",
+                        "source": doc.metadata.get('source', ''),
+                        "category": doc.metadata.get('category', '歌曲'),
+                        "chunk_index": 0,
+                    }
+                )
+                self.parent_child_map[child_id] = parent_id
+                all_chunks.append(chunk)
             else:
                 # 处理TXT文件（生涯、歌词）
                 type_map = {
@@ -242,7 +303,7 @@ class DataPreparationModule:
         if os.path.exists(config.CHROMA_PATH):
             import shutil
             shutil.rmtree(config.CHROMA_PATH)
-            print("已删除旧数据库，将重新创建。")
+            logger.info("已删除旧数据库，将重新创建。")
         
         # 使用智谱的Embedding模型
         # 注意：需要指定 model 参数，智谱AI的embedding模型通常是 "embedding-2"
@@ -257,34 +318,34 @@ class DataPreparationModule:
         
         for i in range(0, len(self.chunks), batch_size):
             batch = self.chunks[i:i + batch_size]
-            print(f"正在处理第 {i//batch_size + 1} 批，包含 {len(batch)} 个文档...")
+            logger.info(f"正在处理第 {i//batch_size + 1} 批，包含 {len(batch)} 个文档...")
             
             try:
                 if db is None:
                     # 第一批：创建新的向量数据库
                     db = Chroma.from_documents(batch, embeddings, persist_directory=config.CHROMA_PATH)
-                    print(f"第 {i//batch_size + 1} 批处理成功")
+                    logger.info(f"第 {i//batch_size + 1} 批处理成功")
                 else:
                     # 后续批次：添加到现有数据库
                     db.add_documents(batch)
-                    print(f"第 {i//batch_size + 1} 批添加成功")
+                    logger.info(f"第 {i//batch_size + 1} 批添加成功")
             except Exception as e:
-                print(f"第 {i//batch_size + 1} 批处理失败: {str(e)}")
+                logger.warning(f"第 {i//batch_size + 1} 批处理失败: {str(e)}")
                 # 尝试逐个处理文档
-                print("尝试逐个处理文档...")
+                logger.info("尝试逐个处理文档...")
                 for j, doc in enumerate(batch):
                     try:
                         if db is None:
                             db = Chroma.from_documents([doc], embeddings, persist_directory=config.CHROMA_PATH)
                         else:
                             db.add_documents([doc])
-                        print(f"  文档 {i+j+1} 处理成功")
+                        logger.info(f"  文档 {i+j+1} 处理成功")
                     except Exception as doc_error:
-                        print(f"  文档 {i+j+1} 处理失败: {str(doc_error)}")
+                        logger.warning(f"  文档 {i+j+1} 处理失败: {str(doc_error)}")
                         continue
         
         if db:
-            print(f"向量数据库创建成功，并已保存至 '{config.CHROMA_PATH}'。")
-            print(f"总共处理了 {len(self.chunks)} 个文档块。")
+            logger.info(f"向量数据库创建成功，并已保存至 '{config.CHROMA_PATH}'。")
+            logger.info(f"总共处理了 {len(self.chunks)} 个文档块。")
         else:
-            print("向量数据库创建失败。")
+            logger.error("向量数据库创建失败。")

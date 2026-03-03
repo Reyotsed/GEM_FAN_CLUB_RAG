@@ -29,6 +29,7 @@ if not ZHIPUAI_API_KEY:
 # ==================== 数据路径配置 ====================
 DATA_PATH: str = os.getenv("DATA_PATH", "./gem_data")
 CHROMA_PATH: str = os.getenv("CHROMA_PATH", "./chroma_db_zhipu")
+HOT_SONG_PATH: str = os.getenv("HOT_SONG_PATH", "./hot_song.json")
 
 # ==================== 日志配置 ====================
 # 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
@@ -51,13 +52,21 @@ LOG_LEVEL_VALUE: int = LOG_LEVEL_MAP.get(LOG_LEVEL, logging.INFO)
 
 # ==================== 检索器配置 ====================
 # 向量检索器返回的文档数量
-VECTOR_RETRIEVER_K: int = int(os.getenv("VECTOR_RETRIEVER_K", "30"))
+VECTOR_RETRIEVER_K: int = int(os.getenv("VECTOR_RETRIEVER_K", "10"))
 # BM25检索器返回的文档数量
-BM25_RETRIEVER_K: int = int(os.getenv("BM25_RETRIEVER_K", "30"))
+BM25_RETRIEVER_K: int = int(os.getenv("BM25_RETRIEVER_K", "10"))
 # 混合检索器最终返回的文档数量
-HYBRID_RETRIEVER_NUM_RESULTS: int = int(os.getenv("HYBRID_RETRIEVER_NUM_RESULTS", "10"))
+HYBRID_RETRIEVER_NUM_RESULTS: int = int(os.getenv("HYBRID_RETRIEVER_NUM_RESULTS", "5"))
 # RRF (Reciprocal Rank Fusion) 常数，用于混合检索器重排序
 RRF_K: int = int(os.getenv("RRF_K", "60"))
+# Maximum number of conversation history turns to include in LLM context
+HISTORY_MAX_TURNS: int = int(os.getenv("HISTORY_MAX_TURNS", "5"))
+
+# ==================== Agent 配置 ====================
+# Agent planning step uses a lower temperature for more deterministic tool selection
+AGENT_PLANNING_TEMPERATURE: float = float(os.getenv("AGENT_PLANNING_TEMPERATURE", "0.1"))
+# Maximum number of tools the agent can call in a single turn
+AGENT_MAX_TOOL_CALLS: int = int(os.getenv("AGENT_MAX_TOOL_CALLS", "3"))
 
 # ==================== 数据准备配置 ====================
 # 向量数据库创建时的批次大小

@@ -67,8 +67,8 @@ class HybridRetriever:
         
         # 处理向量检索结果 - 记录排名
         for i, doc in enumerate(vector_docs):
-            # 使用文档内容的前200个字符作为唯一标识，避免重复内容
-            doc_key = doc.page_content[:200] + str(doc.metadata.get('chunk_id', ''))
+            # Use chunk_id as unique key; fall back to content prefix if missing
+            doc_key = doc.metadata.get('chunk_id') or doc.page_content[:200]
             doc_map[doc_key] = {
                 'doc': doc,
                 'vector_rank': i,
@@ -77,7 +77,7 @@ class HybridRetriever:
         
         # 处理BM25检索结果 - 记录排名
         for i, doc in enumerate(bm25_docs):
-            doc_key = doc.page_content[:200] + str(doc.metadata.get('chunk_id', ''))
+            doc_key = doc.metadata.get('chunk_id') or doc.page_content[:200]
             if doc_key in doc_map:
                 # 文档已存在，更新BM25排名
                 doc_map[doc_key]['bm25_rank'] = i

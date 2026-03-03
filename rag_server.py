@@ -1,13 +1,15 @@
 # main.py
 import os
+import asyncio
 import argparse
 import logging
 from typing import List, Dict, Optional
 from datetime import datetime
+from contextlib import asynccontextmanager
 from langchain.schema import Document
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from langchain_community.chat_models.zhipuai import ChatZhipuAI
 from langchain_community.embeddings.zhipuai import ZhipuAIEmbeddings
@@ -23,6 +25,7 @@ from rag_modules.prompts import (
     QUESTION_REWRITE_SYSTEM_PROMPT,
     QUESTION_REWRITE_USER_PROMPT
 )
+from agent.gem_agent import GemAgent
 import jieba
 import re
 
@@ -59,9 +62,25 @@ def chinese_preprocess_func(text: str) -> List[str]:
 
 
 # --- FastAPI应用初始化 ---
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager: initialize components on startup"""
+    args = parse_args()
+    try:
+        initialize_components(update_db=args.update_db)
+        logger.info("Application startup complete")
+    except Exception as e:
+        logger.error(f"Initialization failed: {str(e)}", exc_info=True)
+        raise
+    yield
+    # Cleanup on shutdown (if needed in the future)
+    logger.info("Application shutdown")
+
 app = FastAPI(
     title=config.API_TITLE,
-    description=config.API_DESCRIPTION
+    description=config.API_DESCRIPTION,
+    lifespan=lifespan
 )
 
 app.add_middleware(
@@ -75,10 +94,18 @@ logger.info(f"CORS已配置，允许的来源: {config.CORS_ORIGINS}")
 
 # 解析命令行参数
 def parse_args():
+    global RUNTIME_MODE
     parser = argparse.ArgumentParser(description='G.E.M. AI Chat API 服务器')
     parser.add_argument('--update-db', action='store_true', 
                        help='更新向量数据库（默认：如果数据库不存在则创建，存在则跳过）')
-    return parser.parse_args()
+    parser.add_argument('--mode', choices=['agent', 'rag'], default=None,
+                       help='运行模式：agent（默认，LLM自主决策工具调用）或 rag（传统RAG链）')
+    # Use parse_known_args to avoid errors when launched by uvicorn with its own arguments
+    args, _ = parser.parse_known_args()
+    # CLI --mode takes precedence over env var
+    if args.mode is not None:
+        RUNTIME_MODE = args.mode
+    return args
 
 # 全局变量，用于存储初始化的组件
 dp: Optional[DataPreparationModule] = None
@@ -89,10 +116,15 @@ bm25_retriever = None
 retriever: Optional[HybridRetriever] = None
 llm: Optional[ChatZhipuAI] = None
 all_chunks = None  # 存储所有文档块，用于创建临时检索器
+time_retriever: Optional[HybridRetriever] = None  # Cached retriever for time-related queries
+gem_agent: Optional[GemAgent] = None  # Tool-augmented agent (Phase 1)
+
+# Runtime mode: 'agent' (default) or 'rag' (legacy fallback)
+RUNTIME_MODE: str = os.getenv("RUNTIME_MODE", "agent")
 
 def initialize_components(update_db: bool = False):
     """初始化所有组件"""
-    global dp, embeddings, db, vector_retriever, bm25_retriever, retriever, llm, all_chunks
+    global dp, embeddings, db, vector_retriever, bm25_retriever, retriever, llm, all_chunks, time_retriever, gem_agent
     
     logger.info("正在初始化组件...")
     
@@ -105,7 +137,7 @@ def initialize_components(update_db: bool = False):
     
     # 加载和分块文档
     dp = DataPreparationModule(config.DATA_PATH)
-    dp.load_data()
+    dp.load_data(hot_song_path=config.HOT_SONG_PATH)
     dp.chunk_documents()
     
     # 创建或更新向量数据库
@@ -142,6 +174,30 @@ def initialize_components(update_db: bool = False):
         timeout=config.ZHIPUAI_TIMEOUT
     )
     
+    # Pre-build time-query retriever with expanded search scope
+    # Use larger K values for time queries to ensure we capture enough date-relevant documents
+    time_k = min(config.VECTOR_RETRIEVER_K * 2, len(all_chunks))
+    time_vector_retriever = db.as_retriever(search_kwargs={"k": time_k})
+    time_bm25_retriever = BM25Retriever.from_documents(
+        all_chunks, k=time_k, preprocess_func=chinese_preprocess_func
+    )
+    time_retriever = HybridRetriever(
+        vector_retriever=time_vector_retriever,
+        bm25_retriever=time_bm25_retriever,
+        num_results=time_k,
+        rrf_k=config.RRF_K
+    )
+    logger.info(f"时间查询检索器预构建完成 (K={time_k})")
+    
+    # Initialize the Agent (Phase 1: Tool-augmented RAG)
+    gem_agent = GemAgent(llm=llm, app_config=config)
+    gem_agent.initialize(
+        retriever=retriever,
+        time_retriever=time_retriever,
+        sort_docs_fn=sort_docs_by_date,
+    )
+    logger.info(f"GemAgent 初始化完成 (运行模式: {RUNTIME_MODE})")
+    
     logger.info("组件初始化完成")
 
 
@@ -155,8 +211,8 @@ question_rewrite_prompt = ChatPromptTemplate.from_messages([
 
 # --- 请求体模型 ---
 class QueryRequest(BaseModel):
-    question: str
-    history: List[Dict[str, str]] = []
+    question: str = Field(..., min_length=1, max_length=500, description="User question, max 500 characters")
+    history: List[Dict[str, str]] = Field(default_factory=list, max_length=20, description="Conversation history, max 20 turns")
 
 
 # --- RAG核心功能 ---
@@ -180,8 +236,12 @@ def is_time_related_query(question: str) -> bool:
     time_keywords = [
         '最近', '最新', '即将', '马上', '接下来', '未来', '以后',
         '最近的', '最新一场', '最近一场', '下一场', '即将举办',
-        '最新演唱会', '最近演唱会', '即将开始的', '最近的演出'
+        '最新演唱会', '最近演唱会', '即将开始的', '最近的演出',
+        'latest', 'recent', 'upcoming', 'next', 'last',
     ]
+    # Also match 4-digit year numbers (e.g. "2025", "2026")
+    if re.search(r'\b20[2-3]\d\b', question):
+        return True
     return any(keyword in question for keyword in time_keywords)
 
 
@@ -309,8 +369,8 @@ def build_messages_with_history(
     """构建包含对话历史的消息列表"""
     messages = [("system", GEM_SYSTEM_PROMPT)]
     
-    # 添加对话历史（只保留最近5轮）
-    for turn in history[-5:]:
+    # 添加对话历史（保留最近N轮，由配置项控制）
+    for turn in history[-config.HISTORY_MAX_TURNS:]:
         role = turn.get("role", "")
         content = turn.get("content", "")
         if role in ["user", "assistant"]:
@@ -328,43 +388,40 @@ def build_messages_with_history(
 
 
 def enhanced_rag_chain(input_data: Dict[str, any]) -> str:
-    """增强的RAG链：问题重写 -> 检索 -> 生成回答"""
+    """Enhanced RAG chain: question rewrite -> retrieval -> generation with staged error handling"""
+    if llm is None or retriever is None:
+        raise RuntimeError("组件未初始化，请先启动服务器")
+    
+    original_question = input_data["question"]
+    history = input_data.get("history", [])
+    
+    # Stage 1: Rewrite question (with fallback to original question on failure)
     try:
-        if llm is None or retriever is None:
-            raise RuntimeError("组件未初始化，请先启动服务器")
-        
-        # 1. 重写问题以优化检索
         rewritten_question = (question_rewrite_prompt | llm).invoke({
-            "current_question": input_data["question"],
-            "conversation_history": format_conversation_history(input_data.get("history", []))
+            "current_question": original_question,
+            "conversation_history": format_conversation_history(history)
         }).content
-        
-        logger.info(f"原始问题: {input_data['question']}")
+        logger.info(f"原始问题: {original_question}")
         logger.info(f"重写后问题: {rewritten_question}")
-        
-        # 2. 检索文档
-        is_time_query = is_time_related_query(input_data['question'])
+    except Exception as e:
+        logger.warning(f"问题重写失败，使用原始问题进行检索: {str(e)}")
+        rewritten_question = original_question
+    
+    # Stage 2: Retrieve documents (with fallback to vector-only retrieval on failure)
+    try:
+        is_time_query = is_time_related_query(original_question)
         
         if is_time_query:
-            # 时间相关查询：扩大检索范围并按时间排序
-            logger.info("检测到时间相关查询，扩大检索范围")
+            logger.info("检测到时间相关查询，使用时间检索器")
             
-            if all_chunks is None:
-                raise RuntimeError("文档块未初始化")
+            if time_retriever is None:
+                raise RuntimeError("时间查询检索器未初始化")
             
-            temp_retriever = HybridRetriever(
-                vector_retriever=db.as_retriever(search_kwargs={"k": config.VECTOR_RETRIEVER_K}),
-                bm25_retriever=BM25Retriever.from_documents(
-                    all_chunks, k=config.BM25_RETRIEVER_K, preprocess_func=chinese_preprocess_func
-                ),
-                num_results=config.VECTOR_RETRIEVER_K,
-                rrf_k=config.RRF_K
-            )
-            
-            retrieved_docs = temp_retriever.retrieve(
-                query=input_data['question'],
+            # Use pre-built time retriever instead of creating a new one each time
+            retrieved_docs = time_retriever.retrieve(
+                query=original_question,
                 vector_query=rewritten_question,
-                bm25_query=rewritten_question
+                bm25_query=original_question  # BM25 uses original question for better keyword matching
             )
             
             retrieved_docs = sort_docs_by_date(retrieved_docs, reverse=True)
@@ -372,44 +429,64 @@ def enhanced_rag_chain(input_data: Dict[str, any]) -> str:
             logger.info(f"时间排序完成，返回前 {len(retrieved_docs)} 个文档")
         else:
             retrieved_docs = retriever.retrieve(
-                query=input_data['question'],
+                query=original_question,
                 vector_query=rewritten_question,
-                bm25_query=rewritten_question
+                bm25_query=original_question  # BM25 uses original question for better keyword matching
             )
-        
-        logger.info(f"检索到 {len(retrieved_docs)} 个相关文档")
-        
-        # 3. 生成回答
+    except Exception as e:
+        logger.warning(f"混合检索失败，降级为向量检索: {str(e)}")
+        try:
+            retrieved_docs = db.as_retriever(
+                search_kwargs={"k": config.HYBRID_RETRIEVER_NUM_RESULTS}
+            ).invoke(rewritten_question)
+        except Exception as fallback_e:
+            logger.error(f"向量检索也失败: {str(fallback_e)}", exc_info=True)
+            raise RuntimeError("检索服务不可用") from fallback_e
+    
+    logger.info(f"检索到 {len(retrieved_docs)} 个相关文档")
+    
+    # Stage 3: Generate response
+    try:
         context_text = "\n\n".join([doc.page_content for doc in retrieved_docs])
         messages = build_messages_with_history(
-            question=input_data["question"],
-            history=input_data.get("history", []),
+            question=original_question,
+            history=history,
             context=context_text,
             current_time=get_current_time()
         )
         
         response_text = llm.invoke(ChatPromptTemplate.from_messages(messages).invoke({})).content
-        
         return response_text
     except Exception as e:
-        logger.error(f"RAG链处理失败: {str(e)}", exc_info=True)
-        raise
+        logger.error(f"LLM生成回答失败: {str(e)}", exc_info=True)
+        raise RuntimeError("AI回答生成失败，请稍后重试") from e
 
 
 # --- API端点 ---
 @app.post("/chat_gem", summary="与邓紫棋AI聊天")
 async def chat_with_gem(request: QueryRequest):
-    """接收用户问题，通过RAG链处理后返回AI回答"""
-    if not request.question:
-        raise HTTPException(status_code=400, detail="问题不能为空")
-    
+    """接收用户问题，根据运行模式选择 Agent 或传统 RAG 链处理"""
     try:
-        logger.info(f"用户问题: {request.question}")
-        response_text = enhanced_rag_chain({
-            "question": request.question,
-            "history": request.history
-        })
-        logger.info(f"AI回答: {response_text}")
+        logger.info(f"用户问题: {request.question} (模式: {RUNTIME_MODE})")
+
+        if RUNTIME_MODE == "agent" and gem_agent is not None:
+            # Agent mode: LLM autonomously decides which tools to call
+            response_text = await asyncio.to_thread(
+                gem_agent.run,
+                request.question,
+                request.history,
+            )
+        else:
+            # Legacy RAG mode: hardcoded if-else retrieval pipeline
+            response_text = await asyncio.to_thread(
+                enhanced_rag_chain,
+                {
+                    "question": request.question,
+                    "history": request.history,
+                }
+            )
+
+        logger.debug(f"AI回答: {response_text[:100]}...")  # Only log first 100 chars at DEBUG level
         return {"answer": response_text}
     except HTTPException:
         raise
@@ -426,13 +503,8 @@ def read_root():
 if __name__ == "__main__":
     import uvicorn
     
-    args = parse_args()
-    try:
-        initialize_components(update_db=args.update_db)
-    except Exception as e:
-        logger.error(f"初始化失败: {str(e)}", exc_info=True)
-        raise
-    
     logger.info(f"正在启动服务器: http://{config.HOST}:{config.PORT}")
     logger.info(f"API文档: http://{config.HOST}:{config.PORT}/docs")
+    # Components are now initialized via lifespan manager,
+    # so uvicorn can be started directly with "uvicorn rag_server:app" as well.
     uvicorn.run(app, host=config.HOST, port=config.PORT)
