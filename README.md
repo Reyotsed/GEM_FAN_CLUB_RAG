@@ -1,16 +1,17 @@
-# 🎵 GEM Fan Club RAG - 邓紫棋AI聊天机器人
+# 🤖 GEM Fan Club RAG - 邓紫棋 AI 聊天机器人
 
 <div align="center">
 
-![Python](https://img.shields.io/badge/Python-3.8+-blue.svg)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.116.1-green.svg)
+![Python](https://img.shields.io/badge/Python-3.8+-3776AB.svg?logo=python)
+![FastAPI](https://img.shields.io/badge/FastAPI-0.116.1-009688.svg?logo=fastapi)
 ![ChromaDB](https://img.shields.io/badge/ChromaDB-1.0.20-purple.svg)
-![智谱AI](https://img.shields.io/badge/智谱AI-GLM--3--Turbo-orange.svg)
+![智谱AI](https://img.shields.io/badge/智谱AI-GLM--4.7-orange.svg)
 ![LangChain](https://img.shields.io/badge/LangChain-0.3.27-yellow.svg)
+![License](https://img.shields.io/badge/License-MIT-blue.svg)
 
-一个基于RAG（检索增强生成）技术的邓紫棋粉丝俱乐部智能问答系统，能够以邓紫棋的语气和风格与粉丝进行自然对话。
+基于 **RAG + Tool-Augmented Agent** 的邓紫棋粉丝智能问答系统，能够以邓紫棋的语气与粉丝自然对话。
 
-[功能特性](#-功能特性) • [快速开始](#-快速开始) • [项目架构](#-项目架构) • [API文档](#-api文档) • [技术栈](#-技术栈) • [流程图](#-系统流程图)
+[功能特性](#-功能特性) · [快速开始](#-快速开始) · [架构设计](#-架构设计) · [API 文档](#-api-文档) · [版本历史](#-版本历史)
 
 </div>
 
@@ -19,149 +20,165 @@
 ## ✨ 功能特性
 
 ### 🎭 智能角色扮演
-- **100%邓紫棋人设**：完全模拟邓紫棋的说话风格和语气
-- **上下文感知**：支持多轮对话，理解对话历史
-- **时间感知**：能够准确判断事件的时间线，使用正确的时态
-- **情感表达**：根据问题内容调整回答的情感色彩
+- **100% 邓紫棋人设**：完全模拟说话风格和语气
+- **多轮对话**：上下文感知，对话历史自动截断（可配置轮数）
+- **时间感知**：LLM 自主调用时间工具，准确判断事件时间线
+- **情感表达**：根据话题调整回答的情感色彩
 
-### 🧠 先进检索技术
-- **自适应分块**：根据内容类型（生涯、演唱会、歌词）采用不同分块策略
-- **混合检索**：结合向量检索和BM25关键词检索
-- **RRF重排序**：使用科学算法优化检索结果
-- **问题重写**：智能重写用户问题，提高检索准确性
-- **中文分词**：使用jieba进行中文分词处理
+### 🧠 v2.0 Tool-Augmented Agent（当前版本）
 
-### 📚 丰富知识库
-- **生涯数据**：邓紫棋的成长历程和重要成就
-- **演唱会信息**：巡演记录和演出详情
-- **歌词库**：完整的歌曲歌词和创作背景
-- **实时更新**：支持动态添加新的数据源
+LLM 不再依赖硬编码路由，而是**自主决策**调用哪些工具：
 
-### 🚀 技术亮点
-- **FastAPI**：高性能异步Web框架
-- **ChromaDB**：高效的向量数据库
-- **智谱AI**：先进的中文大语言模型
-- **CORS支持**：完美支持前端集成
-- **模块化设计**：易于扩展和维护
+| 工具名称                       | 功能                                   | 文件                 |
+| ------------------------------ | -------------------------------------- | -------------------- |
+| `search_knowledge_base`        | 通用知识库检索（生涯、个人信息、奖项） | `knowledge_tools.py` |
+| `search_concert_schedule`      | 演唱会日程检索（带时间排序）           | `knowledge_tools.py` |
+| `search_song_info`             | 歌曲信息检索（歌词、创作背景）         | `knowledge_tools.py` |
+| `get_current_datetime`         | 获取当前时间（含星期几）               | `time_tools.py`      |
+| `get_hot_songs_recommendation` | 热门歌曲推荐（支持偏好筛选）           | `recommend_tools.py` |
+
+### 🔍 先进检索技术
+- **自适应分块**：生涯按时间线、演唱会保持表格结构、歌词整首为一块
+- **混合检索**：向量检索 (ChromaDB) + BM25 关键词检索 (jieba 分词)
+- **RRF 重排序**：Reciprocal Rank Fusion 科学融合检索结果
+- **问题重写**：LLM 智能重写用户问题，提高检索准确性
+
+### 📚 知识库
+- **生涯数据** — 成长历程、重要成就
+- **演唱会信息** — 巡演记录、演出详情 (I AM Gloria 等)
+- **歌词库** — 完整歌词、创作背景
+- **热门歌曲** — hot_song.json 推荐数据
+
+## 🛠️ 技术栈
+
+| 技术        | 版本    | 用途                           |
+| ----------- | ------- | ------------------------------ |
+| Python      | 3.8+    | 主语言                         |
+| FastAPI     | 0.116.1 | 异步 Web 框架                  |
+| ChromaDB    | 1.0.20  | 向量数据库                     |
+| 智谱 AI     | GLM-4.7 | 大语言模型（对话 + Embedding） |
+| LangChain   | 0.3.27  | RAG 编排框架                   |
+| jieba       | Latest  | 中文分词 (BM25)                |
+| uvicorn     | 0.35.0  | ASGI 服务器                    |
+| Pydantic    | 2.10.4  | 数据验证                       |
+| python-docx | 1.2.0   | Word 文档解析                  |
 
 ## 🚀 快速开始
 
 ### 环境要求
+
 - Python 3.8+
-- 智谱AI API Key
+- 智谱 AI API Key
 - 8GB+ 内存（推荐）
 
-### 安装步骤
+### 安装与运行
 
-1. **克隆项目**
 ```bash
-git clone https://github.com/your-username/gem_fan_club_rag.git
-cd gem_fan_club_rag
-```
+# 克隆项目
+git clone https://github.com/Reyotsed/GEM_FAN_CLUB_RAG.git
+cd GEM_FAN_CLUB_RAG
 
-2. **创建虚拟环境**
-```bash
+# 创建虚拟环境
 python -m venv venv
-# Windows
-venv\Scripts\activate
-# Linux/Mac
-source venv/bin/activate
-```
+source venv/bin/activate  # Linux/Mac
+# venv\Scripts\activate   # Windows
 
-3. **安装依赖**
-```bash
+# 安装依赖
 pip install -r requirements.txt
-```
 
-4. **配置API密钥**
-```bash
-# 方法1：环境变量（推荐）
-export ZHIPUAI_API_KEY="your_api_key_here"
+# 配置 API 密钥（任选一种）
+export ZHIPUAI_API_KEY="your_api_key"    # 环境变量
+# 或创建 .env 文件: ZHIPUAI_API_KEY=your_api_key
 
-# 方法2：直接修改config.py
-# 编辑config.py文件，填入您的API密钥
-```
-
-5. **数据准备**
-```bash
+# 数据准备（首次运行，创建向量数据库）
 python load_data.py
+
+# 启动服务
+python rag_server.py                 # 默认 Agent 模式
+python rag_server.py --mode rag      # 传统 RAG 模式
 ```
 
-6. **启动服务**
-```bash
-python rag_server.py
+### 运行模式
+
+| 模式              | 启动方式                                 | 说明                 |
+| ----------------- | ---------------------------------------- | -------------------- |
+| **Agent**（默认） | `python rag_server.py` 或 `--mode agent` | LLM 自主决策调用工具 |
+| **RAG**           | `--mode rag` 或 `RUNTIME_MODE=rag`       | 传统检索增强生成     |
+
+### 访问地址
+
+- API 服务: `http://localhost:8000`
+- Swagger 文档: `http://localhost:8000/docs`
+- 健康检查: `http://localhost:8000/`
+
+## 🏗️ 架构设计
+
+```
+GEM_FAN_CLUB_RAG/
+├── rag_server.py                   # FastAPI 主程序（双模式运行）
+├── config.py                       # 全局配置（环境变量驱动）
+├── load_data.py                    # 数据加载 & 向量化入口
+├── requirements.txt                # 依赖清单
+├── hot_song.json                   # 热门歌曲推荐数据
+│
+├── agent/                          # v2.0 Agent 模块
+│   ├── __init__.py
+│   ├── gem_agent.py                # Agent 编排核心
+│   │   └── 问题重写 → 工具规划(LLM) → 工具执行 → 回答生成
+│   └── tools/
+│       ├── __init__.py
+│       ├── tool_registry.py        # 工具注册中心 + ToolResult
+│       ├── knowledge_tools.py      # 知识检索工具 ×3
+│       ├── time_tools.py           # 时间工具
+│       └── recommend_tools.py      # 推荐工具
+│
+├── rag_modules/                    # RAG 核心模块
+│   ├── data_preparation.py         # 数据清洗、元数据增强
+│   ├── adaptive_splitter.py        # 自适应分块器
+│   ├── hybrid_retriever.py         # 混合检索 + RRF 重排序
+│   └── prompts.py                  # Prompt 模板
+│
+├── gem_data/                       # 邓紫棋知识库
+│   ├── career/gem.txt              # 生涯数据
+│   ├── concert/I AM Gloria.json    # 演唱会数据
+│   └── lyrics/*.txt                # 歌词库
+│
+└── scripts/
+    └── get_lyrics.py               # 歌词抓取脚本
 ```
 
-7. **访问服务**
-- API服务：http://localhost:8000
-- API文档：http://localhost:8000/docs
-- 健康检查：http://localhost:8000/
+### 系统流程
 
-### 首次运行说明
-首次运行时会自动创建向量数据库，这个过程可能需要几分钟时间，请耐心等待。
-
-## 🏗️ 项目架构
-
-```
-gem_fan_club_rag/
-├── rag_server.py              # FastAPI服务器主程序
-├── load_data.py               # 数据加载和预处理脚本
-├── config.py                  # 配置文件
-├── requirements.txt           # 项目依赖
-├── gem_data/                  # 邓紫棋相关数据
-│   ├── career/               # 生涯数据
-│   ├── concert/              # 演唱会数据
-│   └── lyrics/               # 歌词数据
-├── rag_modules/              # RAG核心模块
-│   ├── data_preparation.py   # 数据准备模块
-│   ├── adaptive_splitter.py  # 自适应分块器
-│   └── hybrid_retriever.py   # 混合检索器
-├── chroma_db_zhipu/          # 向量数据库存储
-├── scripts/                  # 辅助脚本
-│   ├── get_lyrics.py         # 歌词获取脚本
-│   └── word_to_txx.py        # 文档转换脚本
-├── gem_rag_flowchart.md      # 系统流程图
-└── README.md                 # 项目说明文档
+```mermaid
+graph TB
+    A[用户提问] --> B[FastAPI]
+    B --> C{运行模式?}
+    C -->|Agent| D[GemAgent]
+    C -->|RAG| E[传统 RAG Chain]
+    D --> F[问题重写]
+    F --> G[LLM 工具规划]
+    G --> H{选择工具}
+    H --> I[search_knowledge_base]
+    H --> J[search_concert_schedule]
+    H --> K[search_song_info]
+    H --> L[get_current_datetime]
+    H --> M[get_hot_songs_recommendation]
+    I & J & K --> N[混合检索: 向量 + BM25]
+    N --> O[RRF 重排序]
+    L --> P[时间信息]
+    M --> Q[歌曲推荐]
+    O & P & Q --> R[邓紫棋角色 Prompt]
+    R --> S[智谱 AI GLM-4.7]
+    S --> T[邓紫棋风格回答]
+    E --> N
 ```
 
-### 核心模块说明
+## 📡 API 文档
 
-| 模块 | 功能 | 技术特点 |
-|------|------|----------|
-| **rag_server.py** | FastAPI服务器 | 异步处理、CORS支持、自动文档生成 |
-| **data_preparation.py** | 数据预处理 | 智能分类、元数据增强、批量处理 |
-| **adaptive_splitter.py** | 智能分块 | 类型感知、结构保持、优化检索 |
-| **hybrid_retriever.py** | 混合检索 | RRF重排序、多模态检索、结果融合 |
+### POST `/chat_gem` — 聊天
 
-## 🔧 核心模块
-
-### 1. 数据准备模块 (`DataPreparationModule`)
-- **自动加载**：支持多种文档格式（TXT、PDF、Word）
-- **智能清洗**：文本格式标准化、特殊字符处理
-- **元数据增强**：自动分类、路径解析、内容标注
-- **批量处理**：高效处理大量文档
-
-### 2. 自适应分块器 (`AdaptiveSplitter`)
-- **生涯数据**：按时间线和重要事件分割，保持逻辑完整性
-- **演唱会数据**：保持表格结构完整性，优化信息检索
-- **歌词数据**：一首歌作为一个完整块，保持内容连贯性
-- **智能合并**：自动处理过小的文本块
-
-### 3. 混合检索器 (`HybridRetriever`)
-- **向量检索**：语义相似度匹配，理解上下文含义
-- **BM25检索**：关键词精确匹配，支持中文分词
-- **RRF重排序**：科学融合两种检索结果，提高准确性
-- **智能去重**：避免重复内容，优化用户体验
-
-## 📡 API文档
-
-### 聊天接口
-
-#### 请求
-```http
-POST /chat_gem
-Content-Type: application/json
-
+```json
+// Request
 {
     "question": "你最近在忙什么？",
     "history": [
@@ -169,176 +186,80 @@ Content-Type: application/json
         {"role": "assistant", "content": "你好！很高兴见到你！"}
     ]
 }
-```
 
-#### 响应
-```json
+// Response
 {
-    "answer": "我最近在准备新专辑呢！虽然很忙，但是看到你们这么支持我，我就充满了动力！"
+    "answer": "我最近在准备新专辑呢！虽然很忙，但看到你们支持我就充满动力！"
 }
 ```
 
-### 健康检查接口
+### GET `/` — 健康检查
 
-#### 请求
-```http
-GET /
-```
-
-#### 响应
 ```json
 {
     "message": "欢迎使用 G.E.M. AI Chat API，服务运行正常！"
 }
 ```
 
-### 错误处理
+## ⚙️ 配置项
 
-| 状态码 | 错误类型 | 说明 |
-|--------|----------|------|
-| 400 | Bad Request | 请求参数错误 |
-| 500 | Internal Server Error | 服务器内部错误 |
+所有配置均通过环境变量或 `.env` 文件管理：
 
-### 使用示例
+| 配置项                         | 默认值             | 说明                             |
+| ------------------------------ | ------------------ | -------------------------------- |
+| `ZHIPUAI_API_KEY`              | （必填）           | 智谱 AI 密钥                     |
+| `ZHIPUAI_MODEL`                | `glm-4.7`          | 对话模型                         |
+| `ZHIPUAI_EMBEDDING_MODEL`      | `embedding-3`      | 向量化模型                       |
+| `ZHIPUAI_TEMPERATURE`          | `0.8`              | 生成温度                         |
+| `ZHIPUAI_TIMEOUT`              | `120`              | API 超时（秒）                   |
+| `VECTOR_RETRIEVER_K`           | `10`               | 向量检索 Top-K                   |
+| `BM25_RETRIEVER_K`             | `10`               | BM25 检索 Top-K                  |
+| `HYBRID_RETRIEVER_NUM_RESULTS` | `5`                | 混合检索最终结果数               |
+| `HISTORY_MAX_TURNS`            | `5`                | 对话历史最大轮数                 |
+| `AGENT_PLANNING_TEMPERATURE`   | `0.1`              | Agent 工具规划温度（低温更确定） |
+| `AGENT_MAX_TOOL_CALLS`         | `3`                | 单轮最大工具调用数               |
+| `HOST` / `PORT`                | `0.0.0.0` / `8000` | 服务地址                         |
 
-#### Python
-```python
-import requests
+## 📋 版本历史
 
-url = "http://localhost:8000/chat_gem"
-data = {
-    "question": "你最喜欢哪首歌？",
-    "history": []
-}
+| 版本       | 日期       | 核心变更                                   |
+| ---------- | ---------- | ------------------------------------------ |
+| **v2.0.0** | 2026-03-03 | Tool-Augmented Agent，LLM 自主决策工具调用 |
+| **v1.1.0** | —          | 质量改进：限流、去重、K 值调优、日志优化   |
+| **v1.0.0** | —          | 初始版本：混合检索 + RRF + 角色扮演        |
 
-response = requests.post(url, json=data)
-result = response.json()
-print(result["answer"])
-```
+> 详细变更日志见 [CHANGELOG.md](CHANGELOG.md)
 
-#### JavaScript
-```javascript
-const response = await fetch('http://localhost:8000/chat_gem', {
-    method: 'POST',
-    headers: {
-        'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-        question: "你最喜欢哪首歌？",
-        history: []
-    })
-});
+### 未来规划
 
-const result = await response.json();
-console.log(result.answer);
-```
+- **v2.1** — 工具缓存、专辑/奖项查询工具
+- **v3.0** — ReAct 多步推理 + SSE 流式响应
+- **v4.0** — Multi-Agent + 微博爬虫 + 多媒体
 
-## 🛠️ 技术栈
+## 🔗 关联项目
 
-| 技术 | 版本 | 用途 | 特点 |
-|------|------|------|------|
-| **Python** | 3.8+ | 主要开发语言 | 简洁高效、生态丰富 |
-| **FastAPI** | 0.116.1 | Web框架 | 高性能、自动文档生成 |
-| **ChromaDB** | 1.0.20 | 向量数据库 | 轻量级、易部署 |
-| **智谱AI** | GLM-3-Turbo | 大语言模型 | 中文优化、成本效益高 |
-| **LangChain** | 0.3.27 | RAG框架 | 模块化、易于扩展 |
-| **Pydantic** | 2.10.4 | 数据验证 | 类型安全、自动验证 |
-| **jieba** | Latest | 中文分词 | 准确率高、速度快 |
-| **uvicorn** | 0.35.0 | ASGI服务器 | 高性能、支持异步 |
-
-### 技术架构图
-
-```mermaid
-graph TB
-    A[用户请求] --> B[FastAPI服务器]
-    B --> C[问题重写模块]
-    C --> D[混合检索器]
-    D --> E[向量检索]
-    D --> F[BM25检索]
-    E --> G[ChromaDB]
-    F --> H[jieba分词]
-    D --> I[RRF重排序]
-    I --> J[邓紫棋角色模板]
-    J --> K[智谱AI GLM-3-Turbo]
-    K --> L[邓紫棋风格回答]
-    L --> M[API响应]
-```
-
-## 🎯 使用场景
-
-- **粉丝互动**：为邓紫棋粉丝提供智能问答服务
-- **信息查询**：快速查找邓紫棋的相关信息
-- **对话陪伴**：模拟邓紫棋与粉丝的日常对话
-- **学习研究**：RAG技术的学习和实验
-- **内容创作**：为音乐相关创作提供灵感
-- **教育应用**：音乐教育和文化传播
-
-## 📊 系统流程图
-
-完整的系统流程图请查看 [gem_rag_flowchart.md](gem_rag_flowchart.md)
-
-### 核心流程概述
-
-1. **数据准备**：加载和清洗邓紫棋相关数据
-2. **智能分块**：根据内容类型采用不同分块策略
-3. **向量化存储**：使用智谱AI进行向量化并存储到ChromaDB
-4. **混合检索**：结合向量检索和BM25关键词检索
-5. **问题重写**：智能重写用户问题，提高检索准确性
-6. **角色扮演**：使用邓紫棋角色模板生成回答
-7. **API响应**：通过FastAPI返回结果
-
-## 🤝 贡献指南
-
-欢迎提交Issue和Pull Request！
-
-### 如何贡献
-
-1. **Fork本项目**
-2. **创建特性分支** (`git checkout -b feature/AmazingFeature`)
-3. **提交更改** (`git commit -m 'Add some AmazingFeature'`)
-4. **推送到分支** (`git push origin feature/AmazingFeature`)
-5. **开启Pull Request**
-
-### 贡献类型
-
-- 🐛 Bug修复
-- ✨ 新功能开发
-- 📚 文档改进
-- 🎨 界面优化
-- ⚡ 性能提升
-
-### 开发规范
-
-- 遵循PEP 8代码风格
-- 添加必要的注释和文档
-- 确保代码通过测试
-- 更新相关文档
-
-## 📄 许可证
-
-本项目采用 MIT 许可证 - 查看 [LICENSE](LICENSE) 文件了解详情
+| 项目                 | 说明                 | 仓库                                                   |
+| -------------------- | -------------------- | ------------------------------------------------------ |
+| **GEM-FAN-CLUB-VUE** | Vue 3 前端应用       | [GitHub](https://github.com/Reyotsed/GEM-FAN-CLUB-VUE) |
+| **GEM-FAN-CLUB-WEB** | Spring Boot 后端 API | [GitHub](https://github.com/Reyotsed/GEM-FAN-CLUB-WEB) |
 
 ## 🙏 致谢
 
-- [智谱AI](https://www.zhipuai.cn/) - 提供强大的中文大语言模型
-- [LangChain](https://langchain.com/) - 优秀的RAG框架
-- [ChromaDB](https://www.trychroma.com/) - 高效的向量数据库
-- [FastAPI](https://fastapi.tiangolo.com/) - 现代化的Python Web框架
-- [jieba](https://github.com/fxsjy/jieba) - 优秀的中文分词工具
+- [智谱 AI](https://www.zhipuai.cn/) — 中文大语言模型
+- [LangChain](https://langchain.com/) — RAG 框架
+- [ChromaDB](https://www.trychroma.com/) — 向量数据库
+- [FastAPI](https://fastapi.tiangolo.com/) — Web 框架
 
-## 📞 联系我们
+## 📄 许可证
 
-- 项目地址：[GitHub Repository](https://github.com/your-username/gem_fan_club_rag)
-- 问题反馈：[Issues](https://github.com/your-username/gem_fan_club_rag/issues)
-- 邮箱：your-email@example.com
+MIT License
 
 ---
 
 <div align="center">
 
-**⭐ 如果这个项目对您有帮助，请给个Star支持一下！**
+⭐ **如果这个项目对你有帮助，请给一个 Star！**
 
-Made with ❤️ by GEM Fan Club
+Made with ❤️ for G.E.M. fans
 
 </div>
-
