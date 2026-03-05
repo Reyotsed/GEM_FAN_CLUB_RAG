@@ -330,6 +330,51 @@ class DataPreparationModule:
 
 
 
+    @staticmethod
+    def _truncate_text_for_embedding(text: str, max_chars: int = 4500) -> str:
+        """
+        截断文本以确保不超过智谱AI embedding-3 的 3072 token 限制。
+        中文约 1 字符 ≈ 1~2 tokens，取保守值 max_chars=4500（约 2250~4500 tokens）。
+        """
+        if len(text) <= max_chars:
+            return text
+        # 尽量在段落/句子边界截断
+        truncated = text[:max_chars]
+        # 尝试在最后一个句号/换行处截断，保持语义完整性
+        last_break = max(truncated.rfind('\n'), truncated.rfind('。'), truncated.rfind('！'), truncated.rfind('？'))
+        if last_break > max_chars * 0.7:  # 至少保留70%内容
+            truncated = truncated[:last_break + 1]
+        return truncated
+
+    def _sanitize_chunks_for_embedding(self):
+        """
+        在向量化之前，对所有 chunk 进行预处理：
+        1. 过滤空文本
+        2. 截断超长文本（防止超过 embedding-3 的 3072 token 上限）
+        """
+        sanitized = []
+        truncated_count = 0
+        skipped_count = 0
+        for chunk in self.chunks:
+            text = chunk.page_content.strip()
+            if not text:
+                skipped_count += 1
+                continue
+            original_len = len(text)
+            text = self._truncate_text_for_embedding(text)
+            if len(text) < original_len:
+                truncated_count += 1
+                logger.debug(f"文档被截断: {original_len} -> {len(text)} 字符, source={chunk.metadata.get('source', '')}")
+            chunk.page_content = text
+            sanitized.append(chunk)
+        
+        if skipped_count > 0:
+            logger.info(f"跳过了 {skipped_count} 个空文档")
+        if truncated_count > 0:
+            logger.warning(f"截断了 {truncated_count} 个超长文档（超过 embedding-3 的 token 限制）")
+        
+        self.chunks = sanitized
+
     def create_vector_db(self):
         """
         重建向量数据库
@@ -340,15 +385,17 @@ class DataPreparationModule:
             shutil.rmtree(config.CHROMA_PATH)
             logger.info("已删除旧数据库，将重新创建。")
         
+        # 预处理：截断超长文本、过滤空文本，防止 embedding API 报错
+        self._sanitize_chunks_for_embedding()
+        
         # 使用智谱的Embedding模型
-        # 注意：需要指定 model 参数，智谱AI的embedding模型通常是 "embedding-2"
         embeddings = ZhipuAIEmbeddings(
             api_key=config.ZHIPUAI_API_KEY,
             model=config.ZHIPUAI_EMBEDDING_MODEL  # 从配置读取embedding模型
         )
         
-        # 分批处理文档，避免超过智谱AI的64条限制
-        batch_size = config.VECTOR_DB_BATCH_SIZE  # 从配置读取批次大小
+        # 分批处理文档，避免超过智谱AI embedding-3 的64条限制
+        batch_size = min(config.VECTOR_DB_BATCH_SIZE, 64)  # 确保不超过API限制
         db = None
         
         for i in range(0, len(self.chunks), batch_size):
