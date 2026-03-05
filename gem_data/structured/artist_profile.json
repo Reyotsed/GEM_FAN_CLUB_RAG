@@ -1,0 +1,277 @@
+{
+    "name": "邓紫棋",
+    "english_name": "G.E.M.",
+    "full_name": "邓诗颖",
+    "full_english_name": "Gloria Tang Sze-wing",
+    "birthday": "1991-08-16",
+    "birthday_note": "农历七夕",
+    "birthplace": "上海",
+    "nationality": "中国香港",
+    "zodiac": "狮子座",
+    "profession": [
+        "歌手",
+        "词曲作家",
+        "唱片监制"
+    ],
+    "debut_date": "2008-07-10",
+    "debut_age": 16,
+    "family": {
+        "father": "邓宇铭（香港人）",
+        "mother": "容佳文（上海人，上海音乐学院声乐系毕业）",
+        "sibling": "妹妹（小四岁）",
+        "uncle": "舅父（小提琴演奏家）",
+        "grandmother": "外祖母（声乐教师，2011年3月8日逝世）",
+        "grandfather": "外祖父（乐团萨克斯风演奏家）"
+    },
+    "education": [
+        "九龙塘方方乐趣英文小学（一年级）",
+        "中华基督教会协和小学上午校（二年级至2003年毕业）",
+        "真光女书院（中学）",
+        "英国皇家音乐学院联合委员会钢琴八级（13岁）",
+        "香港中学会考21分（2008年）",
+        "香港演艺学院声乐系（2008年入学，2009年放弃）"
+    ],
+    "labels": [
+        {
+            "name": "蜂鸟音乐",
+            "period": "2008-2019"
+        },
+        {
+            "name": "G Nation（个人工作室）",
+            "period": "2019-至今"
+        }
+    ],
+    "physical": {
+        "note": "左边颚骨萎缩导致上下颚牙齿不能咬合，说话口音独特"
+    },
+    "fan_name": "棋士",
+    "fan_nickname_for_gem": "解解（姐姐）",
+    "charity": "棋迹慈善基金（GEMiracle Foundation，2017年10月27日成立）",
+    "social_media": {
+        "youtube_channel": "GEM邓紫棋",
+        "youtube_total_views": "24亿+（截至2025年1月）",
+        "youtube_subscribers": "100万+（2018年11月22日获金奖状认证）"
+    },
+    "records": [
+        "首位拥有五支破亿MV的华语女歌手",
+        "《光年之外》MV YouTube华语歌观看量第一（2.9亿+）",
+        "首位YouTube Channel播放破亿的华人歌手（2014年8月）",
+        "2024年演唱会票房逾25亿元人民币，高踞榜首",
+        "2024年华语歌手入场人次第一（300万+）",
+        "2024年华语歌手单年体育场演唱会场次第一（69场）",
+        "2025年全球历年女歌手巡回演唱会票房第四位",
+        "24岁前完成80场个人演唱会",
+        "华语女歌手单轮巡演最高场次记录保持者",
+        "首位于启德主场馆举办个唱的女歌手，启德五连开第一人",
+        "入围金曲歌后最年轻的女歌手（21岁）",
+        "唯一未成年的叱咤乐坛个人奖项女得主",
+        "福布斯2016年30 Under 30唯一在榜亚洲音乐人",
+        "2018年BBC百大女性第34名（唯一华人）"
+    ],
+    "billion_mvs": [
+        {
+            "song": "光年之外",
+            "views": "2.9亿+",
+            "note": "YouTube华语歌观看量第一"
+        },
+        {
+            "song": "再见",
+            "views": "1.2亿+",
+            "date_broke_billion": "2019-09-05"
+        },
+        {
+            "song": "倒数",
+            "views": "1亿+",
+            "date_broke_billion": "2020-06-03"
+        },
+        {
+            "song": "来自天堂的魔鬼",
+            "views": "1亿+",
+            "date_broke_billion": "2021-09-12"
+        },
+        {
+            "song": "喜欢你",
+            "views": "1亿+",
+            "date_broke_billion": "2023-11-08"
+        }
+    ],
+    "discography": {
+        "studio_albums": [
+            {
+                "title": "18...",
+                "year": 2009,
+                "release_date": "2009-10-27",
+                "label": "蜂鸟音乐"
+            },
+            {
+                "title": "MySecret",
+                "year": 2010,
+                "release_date": "2010-10-28",
+                "label": "蜂鸟音乐"
+            },
+            {
+                "title": "Xposed（曝光）",
+                "year": 2012,
+                "release_date": "2012-07-05",
+                "label": "蜂鸟音乐"
+            },
+            {
+                "title": "新的心跳",
+                "year": 2015,
+                "release_date": "2015-11-06",
+                "label": "索尼音乐"
+            },
+            {
+                "title": "童话的休止符",
+                "year": 2019,
+                "label": "蜂鸟音乐",
+                "note": "三张EP《另一个童话》《毒苹果》《睡皇后》合辑"
+            },
+            {
+                "title": "摩天动物园",
+                "year": 2019,
+                "release_date": "2019-12-27",
+                "label": "G Nation"
+            },
+            {
+                "title": "启示录",
+                "year": 2022,
+                "release_date": "2022-09-30",
+                "label": "华纳音乐",
+                "note": "14首歌+14支MV，首个以音乐连续剧方式发布"
+            },
+            {
+                "title": "Revelación",
+                "year": 2023,
+                "release_date": "2023-07-10",
+                "note": "《启示录》西班牙语版，首位推出西语专辑的主流华语歌手"
+            }
+        ],
+        "re_recorded_albums": [
+            {
+                "title": "I Am Gloria",
+                "year": 2025,
+                "release_date": "2025-06-12"
+            }
+        ],
+        "compilation_albums": [
+            {
+                "title": "The Best of 2008–2012",
+                "year": 2013
+            }
+        ],
+        "eps": [
+            {
+                "title": "G.E.M.",
+                "year": 2008,
+                "release_date": "2008-10-16",
+                "note": "首张EP，16岁出道"
+            },
+            {
+                "title": "另一个童话",
+                "year": 2018,
+                "note": "童话三部曲序章"
+            },
+            {
+                "title": "毒苹果",
+                "year": 2018,
+                "note": "童话三部曲中章"
+            },
+            {
+                "title": "睡皇后",
+                "year": 2018,
+                "note": "童话三部曲终章，含粤语歌《睡皇后》"
+            }
+        ]
+    },
+    "tours": [
+        {
+            "name": "G.E.M. Get Everybody Moving 演唱会",
+            "period": "2011-2012",
+            "total_shows": 14
+        },
+        {
+            "name": "G.E.M. X.X.X. Live 世界巡回演唱会",
+            "period": "2013-2015",
+            "total_shows": 73
+        },
+        {
+            "name": "G.E.M. Queen of Hearts 世界巡回演唱会",
+            "period": "2017-2019",
+            "total_shows": 48,
+            "note": "因解约风波以高雄场为最终站"
+        },
+        {
+            "name": "G.E.M. I AM GLORIA 世界巡回演唱会",
+            "period": "2023-2025",
+            "total_shows": 149,
+            "note": "含2.0版本升级"
+        }
+    ],
+    "major_awards": [
+        {
+            "award": "叱咤乐坛生力军女歌手金奖",
+            "year": 2008,
+            "note": "最年轻兼未成年得主"
+        },
+        {
+            "award": "第24届金曲奖最佳国语女歌手提名",
+            "year": 2013,
+            "note": "最年轻入围者"
+        },
+        {
+            "award": "第27届KCA美国儿童选择奖亚洲最受欢迎艺人",
+            "year": 2014,
+            "note": "首位获此奖的香港歌手"
+        },
+        {
+            "award": "第23届MTV欧洲音乐大奖最佳中国大陆及香港地区艺人",
+            "year": 2016
+        },
+        {
+            "award": "2018年BBC百大女性",
+            "year": 2018,
+            "note": "第34名，唯一华人"
+        },
+        {
+            "award": "第31届金曲奖评审团奖",
+            "year": 2020,
+            "work": "摩天动物园"
+        }
+    ],
+    "filmography": [
+        {
+            "title": "保持爱你",
+            "year": 2009,
+            "role": "客串"
+        },
+        {
+            "title": "爱出猫",
+            "year": 2009,
+            "role": "主演"
+        },
+        {
+            "title": "无敌破坏王",
+            "year": 2012,
+            "role": "主演配音"
+        },
+        {
+            "title": "一路逆风",
+            "year": 2017,
+            "role": "个人纪录片"
+        },
+        {
+            "title": "Charming",
+            "year": 2018,
+            "role": "配音"
+        }
+    ],
+    "books": [
+        {
+            "title": "启示路",
+            "year": 2025,
+            "publisher_traditional": "香港中和出版有限公司",
+            "publisher_simplified": "北京联合出版公司"
+        }
+    ]
+}

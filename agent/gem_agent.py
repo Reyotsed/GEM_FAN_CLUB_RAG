@@ -38,6 +38,12 @@ from agent.tools.recommend_tools import (
     get_hot_songs_recommendation,
     configure as configure_recommend_tools,
 )
+from agent.tools.structured_data_tools import (
+    LOOKUP_PROFILE_DESCRIPTION, LOOKUP_PROFILE_SCHEMA,
+    LOOKUP_MILESTONES_DESCRIPTION, LOOKUP_MILESTONES_SCHEMA,
+    lookup_artist_profile, lookup_milestones,
+    configure as configure_structured_data,
+)
 from rag_modules.prompts import (
     GEM_SYSTEM_PROMPT,
     GEM_USER_PROMPT,
@@ -59,12 +65,14 @@ TOOL_PLANNING_SYSTEM_PROMPT = """\
 ## 规则
 1. 仔细分析问题，选择**最合适**的工具（可以同时选择多个）。
 2. 如果问题涉及时间（如"最近"、"下一场"、某个年份），**必须**同时调用 `get_current_datetime` 和相关检索工具。
-3. 如果问题涉及某首具体歌曲，优先使用 `search_song_info`。
-4. 如果问题涉及演唱会、巡演，优先使用 `search_concert_schedule`。
-5. 如果问题是推荐歌曲、好听的歌，使用 `get_hot_songs_recommendation`。
-6. 如果是一般性问题（生涯、个人信息、奖项等），使用 `search_knowledge_base`。
-7. 如果是简单闲聊（如"你好"、"在吗"），可以选择不调用任何工具，返回空列表。
-8. 结合对话历史理解上下文（如代词指代）。
+3. **事实性问题**（生日、星座、家庭、专辑列表、巡演列表、奖项、记录等），**优先**使用 `lookup_artist_profile`。
+4. **时间线问题**（某年发生了什么、某事件是什么时候），**优先**使用 `lookup_milestones`。
+5. 如果问题涉及某首具体歌曲，优先使用 `search_song_info`。
+6. 如果问题涉及演唱会、巡演的具体场次信息，优先使用 `search_concert_schedule`。
+7. 如果问题是推荐歌曲、好听的歌，使用 `get_hot_songs_recommendation`。
+8. 如果结构化数据不足以回答（如需要详细叙述、背景故事），再用 `search_knowledge_base` 补充。
+9. 如果是简单闲聊（如"你好"、"在吗"），可以选择不调用任何工具，返回空列表。
+10. 结合对话历史理解上下文（如代词指代）。
 
 ## 输出格式
 你**必须且只能**输出一个 JSON 数组，每个元素是一个工具调用对象。格式如下：
@@ -140,6 +148,11 @@ class GemAgent:
         )
         configure_recommend_tools(retriever=retriever)
 
+        # Configure structured data tools
+        import os
+        structured_dir = os.path.join(self.config.DATA_PATH, "structured")
+        configure_structured_data(structured_dir)
+
         # Register tools in the registry
         self.registry.register(
             name="search_knowledge_base",
@@ -170,6 +183,18 @@ class GemAgent:
             description=HOT_SONGS_DESCRIPTION,
             parameters=HOT_SONGS_SCHEMA,
             func=get_hot_songs_recommendation,
+        )
+        self.registry.register(
+            name="lookup_artist_profile",
+            description=LOOKUP_PROFILE_DESCRIPTION,
+            parameters=LOOKUP_PROFILE_SCHEMA,
+            func=lookup_artist_profile,
+        )
+        self.registry.register(
+            name="lookup_milestones",
+            description=LOOKUP_MILESTONES_DESCRIPTION,
+            parameters=LOOKUP_MILESTONES_SCHEMA,
+            func=lookup_milestones,
         )
 
         self._initialized = True

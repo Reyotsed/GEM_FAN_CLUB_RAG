@@ -257,44 +257,78 @@ class AdaptiveSplitter:
         
         return chunks
 
-    def _lyrics_splitter(self, text: str) -> List[Document]:
+    def split_lyrics_json(self, songs: list) -> List[Document]:
         """
-        歌词文档分块器 - 一首歌一个chunk
-        每首歌曲作为一个完整的文档块，包含歌曲信息和歌词内容
+        结构化歌词分块器 - 从 lyrics.json 的 songs 列表生成 chunks
+        每首歌产生 1 个 chunk：元数据头 + 纯歌词正文
         """
         chunks = []
-        
-        # 提取歌曲名称 - 修复解析逻辑
-        song_name = ""
+        for song in songs:
+            title = song.get("title", "未知歌曲")
+            album = song.get("album", "")
+            year = song.get("year")
+            lyricist = "/".join(song.get("lyricist", []))
+            composer = "/".join(song.get("composer", []))
+            arranger = "/".join(song.get("arranger", []))
+            producer = "/".join(song.get("producer", []))
+            is_cover = song.get("is_cover", False)
+            original_artist = song.get("original_artist")
+            lyrics_text = song.get("lyrics_text", "")
+
+            # Build a single semantic-rich chunk
+            header_parts = [f"歌曲: {title}"]
+            if album:
+                header_parts.append(f"专辑: {album}")
+            if year:
+                header_parts.append(f"年份: {year}")
+            if lyricist:
+                header_parts.append(f"作词: {lyricist}")
+            if composer:
+                header_parts.append(f"作曲: {composer}")
+            if arranger:
+                header_parts.append(f"编曲: {arranger}")
+            if producer:
+                header_parts.append(f"制作人: {producer}")
+            if is_cover and original_artist:
+                header_parts.append(f"原唱: {original_artist}（翻唱）")
+
+            content = "\n".join(header_parts) + "\n\n" + lyrics_text
+
+            chunk = Document(
+                page_content=content,
+                metadata={
+                    "chunk_type": "lyrics",
+                    "song_name": title,
+                    "album": album,
+                    "year": year,
+                    "is_cover": is_cover,
+                    "is_live": song.get("is_live", False),
+                    "song_id": song.get("song_id"),
+                    "category": "歌曲",
+                }
+            )
+            chunks.append(chunk)
+        return chunks
+
+    def _lyrics_splitter(self, text: str) -> List[Document]:
+        """
+        Legacy: fallback for plain-text lyrics files.
+        Kept for backward compatibility; new pipeline uses split_lyrics_json.
+        """
+        chunks = []
+        song_name = "未知歌曲"
         if '歌曲名' in text:
             try:
-                # 更健壮的歌曲名提取
                 song_line = text.split('歌曲名')[1].split('\n')[0].strip()
-                # 移除可能的冒号
                 song_name = song_line.replace(':', '').strip()
-            except:
-                song_name = "未知歌曲"
-        else:
-            song_name = "未知歌曲"
-        
-        # 提取歌名、作词作曲作为一个chunk
-        song_info = f"歌曲名: {song_name} \n"
-        for line in text.split('\n'):
-            if '作词' in line:
-                song_info += line.replace('歌词', '') + '\n'
-            elif '作曲' in line:
-                song_info += line.replace('歌词', '') + '\n'
-            elif not len(line.strip()) == 0 and line[0] == ' ':
-                song_info += line.replace('歌词', '') + '\n'
+            except Exception:
+                pass
 
-        chunks.append(self._create_chunk(song_info, "song_info"))
-        # 整个文档作为一个chunk，包含歌曲信息和歌词
         if text.strip():
-            # 创建包含详细元数据的chunk
             chunk = Document(
                 page_content=text.strip(),
                 metadata={
-                    "chunk_type": "lyrics_info",
+                    "chunk_type": "lyrics",
                     "song_name": song_name,
                 }
             )

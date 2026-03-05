@@ -31,46 +31,65 @@ class DataPreparationModule:
         data_path_obj = Path(self.data_path)
         logger.info(f"Loading data from: {data_path_obj}")
 
-        # 加载TXT文件
+        # 加载TXT文件（跳过 lyrics/ 目录下的旧 txt 和原始未拆分的 gem.txt）
         for md_file in data_path_obj.rglob("*.txt"):
-            # 读取文件内容，保持Markdown格式
+            if 'lyrics' in md_file.parts:
+                continue  # lyrics now loaded from lyrics.json
+            if md_file.name == 'gem.txt':
+                continue  # original unsplit file, superseded by split career files
             with open(md_file, 'r', encoding='utf-8') as f:
                 content = f.read()
 
-            # 为每个父文档分配唯一ID
             parent_id = str(uuid.uuid4())
-
             content = self._clean_text(content)
 
-            # 创建Document对象
             doc = Document(
                 page_content=content,
                 metadata={
                     "source": str(md_file),
                     "parent_id": parent_id,
-                    "doc_type": "parent"  # 标记为父文档
+                    "doc_type": "parent"
                 }
             )
             documents.append(doc)
 
-        # 加载JSON文件（演唱会数据）
+        # 加载结构化歌词 lyrics.json
+        lyrics_json_path = data_path_obj / "lyrics.json"
+        if lyrics_json_path.exists():
+            with open(lyrics_json_path, 'r', encoding='utf-8') as f:
+                lyrics_data = json.load(f)
+            parent_id = str(uuid.uuid4())
+            doc = Document(
+                page_content=json.dumps(lyrics_data, ensure_ascii=False),
+                metadata={
+                    "source": str(lyrics_json_path),
+                    "parent_id": parent_id,
+                    "doc_type": "parent",
+                    "file_type": "lyrics_json",
+                    "category": "歌曲",
+                }
+            )
+            documents.append(doc)
+            logger.info(f"Loaded lyrics.json: {lyrics_data.get('total_songs', 0)} songs")
+
+        # 加载JSON文件（演唱会数据，排除 lyrics.json 和 structured/ 目录）
         for json_file in data_path_obj.rglob("*.json"):
-            # 读取JSON文件
+            if json_file.name == 'lyrics.json':
+                continue  # already loaded above
+            if 'structured' in json_file.parts:
+                continue  # structured data accessed via dedicated lookup tools
             with open(json_file, 'r', encoding='utf-8') as f:
                 json_data = json.load(f)
             
-            # 为每个父文档分配唯一ID
             parent_id = str(uuid.uuid4())
             
-            # 创建Document对象，将JSON转换为文本格式
-            # JSON文件作为父文档，但内容会被分块器处理
             doc = Document(
                 page_content=json.dumps(json_data, ensure_ascii=False, indent=2),
                 metadata={
                     "source": str(json_file),
                     "parent_id": parent_id,
                     "doc_type": "parent",
-                    "file_type": "json"  # 标记为JSON文件
+                    "file_type": "json"
                 }
             )
             documents.append(doc)
@@ -205,6 +224,22 @@ class DataPreparationModule:
                     self.parent_child_map[child_id] = parent_id
                 
                 all_chunks.extend(json_chunks)
+            elif doc.metadata.get('file_type') == 'lyrics_json':
+                # Structured lyrics: use split_lyrics_json
+                lyrics_data = json.loads(doc.page_content)
+                songs = lyrics_data.get('songs', [])
+                lyrics_chunks = self.adaptive_splitter.split_lyrics_json(songs)
+                for i, chunk in enumerate(lyrics_chunks):
+                    child_id = str(uuid.uuid4())
+                    chunk.metadata.update({
+                        "chunk_id": child_id,
+                        "parent_id": parent_id,
+                        "doc_type": "child",
+                        "source": doc.metadata.get('source', ''),
+                        "chunk_index": i,
+                    })
+                    self.parent_child_map[child_id] = parent_id
+                all_chunks.extend(lyrics_chunks)
             elif doc.metadata.get('file_type') == 'hot_songs':
                 # Hot songs list: keep as a single chunk (small enough, no need to split)
                 child_id = str(uuid.uuid4())
