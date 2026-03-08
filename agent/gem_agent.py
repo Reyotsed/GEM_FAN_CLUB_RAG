@@ -1,48 +1,41 @@
 """
-GEM Agent — Tool-augmented RAG Agent for GEM Fan Club.
+GEM Agent — Skill-based RAG Agent for GEM Fan Club.
 
 This module implements a ReAct-style agent loop using prompt-based
-tool calling (compatible with any LLM, including ChatZhipuAI which has
+function calling (compatible with any LLM, including ChatZhipuAI which has
 limited native function-calling support in LangChain).
 
+Architecture (v2.0 — Skill-based):
+    Skills are domain-grouped bundles of functions.  The SkillRegistry
+    aggregates all skills and exposes a flat function list to the LLM,
+    while internally routing each call to its owning Skill.
+
 Flow:
-    1. User question + history → LLM decides which tool(s) to call
-    2. Agent executes tool(s) and collects results
-    3. LLM generates final persona-rich answer using tool results + history
+    1. User question + history → LLM rewrites question for better retrieval
+    2. LLM plans which function(s) to call (sees flat function list)
+    3. Agent dispatches calls via SkillRegistry → owning Skill executes
+    4. LLM generates final persona-rich answer using function results + history
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Dict, List
 
 from langchain.prompts import ChatPromptTemplate
 from langchain_community.chat_models.zhipuai import ChatZhipuAI
 
-from agent.tools.tool_registry import ToolRegistry, ToolResult
-from agent.tools.knowledge_tools import (
-    SEARCH_KB_DESCRIPTION, SEARCH_KB_SCHEMA,
-    SEARCH_CONCERT_DESCRIPTION, SEARCH_CONCERT_SCHEMA,
-    SEARCH_SONG_DESCRIPTION, SEARCH_SONG_SCHEMA,
-    search_knowledge_base, search_concert_schedule, search_song_info,
-    configure as configure_knowledge_tools,
-)
-from agent.tools.time_tools import (
-    GET_DATETIME_DESCRIPTION, GET_DATETIME_SCHEMA,
-    get_current_datetime,
-)
-from agent.tools.recommend_tools import (
-    HOT_SONGS_DESCRIPTION, HOT_SONGS_SCHEMA,
-    get_hot_songs_recommendation,
-    configure as configure_recommend_tools,
-)
-from agent.tools.structured_data_tools import (
-    LOOKUP_PROFILE_DESCRIPTION, LOOKUP_PROFILE_SCHEMA,
-    LOOKUP_MILESTONES_DESCRIPTION, LOOKUP_MILESTONES_SCHEMA,
-    lookup_artist_profile, lookup_milestones,
-    configure as configure_structured_data,
+from agent.skills import (
+    SkillRegistry,
+    KnowledgeSkill,
+    RecommendSkill,
+    ProfileSkill,
+    UtilitySkill,
+    FunctionResult,
 )
 from rag_modules.prompts import (
     GEM_SYSTEM_PROMPT,
@@ -53,7 +46,7 @@ from rag_modules.prompts import (
 
 logger = logging.getLogger(__name__)
 
-# ─── Prompt for the PLANNING step (tool selection) ─────────────────────
+# ─── Prompt for the PLANNING step (function selection) ──────────────────
 
 TOOL_PLANNING_SYSTEM_PROMPT = """\
 你是邓紫棋（G.E.M.）的智能助手调度器。你的职责是分析粉丝的问题，决定需要调用哪些工具来获取信息。
@@ -104,19 +97,23 @@ TOOL_PLANNING_USER_PROMPT = """\
 
 class GemAgent:
     """
-    Tool-augmented RAG Agent for GEM Fan Club.
+    Skill-based RAG Agent for GEM Fan Club.
 
-    Lifecycle:
+    Lifecycle::
+
         agent = GemAgent(llm, config)
-        agent.initialize(retriever, time_retriever, sort_fn, ...)
+        agent.initialize(retriever, time_retriever, sort_fn)
         answer = agent.run(question, history)
     """
 
     def __init__(self, llm: ChatZhipuAI, app_config: Any) -> None:
         self.llm = llm
         self.config = app_config
-        self.registry = ToolRegistry()
+        self.skill_registry = SkillRegistry()
         self._initialized = False
+
+        # Read max-tool-calls limit from config (default 3)
+        self._max_tool_calls: int = getattr(app_config, "AGENT_MAX_TOOL_CALLS", 3)
 
         # Prompt templates
         self._planning_prompt = ChatPromptTemplate.from_messages([
@@ -138,70 +135,42 @@ class GemAgent:
         time_retriever,
         sort_docs_fn,
     ) -> None:
-        """Wire up tools with runtime dependencies (retrievers etc.)."""
-        # Configure tool modules with retriever references
-        configure_knowledge_tools(
+        """Wire up skills with runtime dependencies (retrievers etc.)."""
+
+        # 1. Knowledge Skill
+        knowledge_skill = KnowledgeSkill()
+        knowledge_skill.configure(
             retriever=retriever,
             time_retriever=time_retriever,
             sort_docs_fn=sort_docs_fn,
-            hybrid_num_results=self.config.HYBRID_RETRIEVER_NUM_RESULTS,
+            num_results=self.config.HYBRID_RETRIEVER_NUM_RESULTS,
         )
-        configure_recommend_tools(retriever=retriever)
 
-        # Configure structured data tools
-        import os
+        # 2. Recommend Skill
+        recommend_skill = RecommendSkill()
+        recommend_skill.configure(retriever=retriever)
+
+        # 3. Profile Skill
+        profile_skill = ProfileSkill()
         structured_dir = os.path.join(self.config.DATA_PATH, "structured")
-        configure_structured_data(structured_dir)
+        profile_skill.configure(structured_data_dir=structured_dir)
 
-        # Register tools in the registry
-        self.registry.register(
-            name="search_knowledge_base",
-            description=SEARCH_KB_DESCRIPTION,
-            parameters=SEARCH_KB_SCHEMA,
-            func=search_knowledge_base,
-        )
-        self.registry.register(
-            name="search_concert_schedule",
-            description=SEARCH_CONCERT_DESCRIPTION,
-            parameters=SEARCH_CONCERT_SCHEMA,
-            func=search_concert_schedule,
-        )
-        self.registry.register(
-            name="search_song_info",
-            description=SEARCH_SONG_DESCRIPTION,
-            parameters=SEARCH_SONG_SCHEMA,
-            func=search_song_info,
-        )
-        self.registry.register(
-            name="get_current_datetime",
-            description=GET_DATETIME_DESCRIPTION,
-            parameters=GET_DATETIME_SCHEMA,
-            func=get_current_datetime,
-        )
-        self.registry.register(
-            name="get_hot_songs_recommendation",
-            description=HOT_SONGS_DESCRIPTION,
-            parameters=HOT_SONGS_SCHEMA,
-            func=get_hot_songs_recommendation,
-        )
-        self.registry.register(
-            name="lookup_artist_profile",
-            description=LOOKUP_PROFILE_DESCRIPTION,
-            parameters=LOOKUP_PROFILE_SCHEMA,
-            func=lookup_artist_profile,
-        )
-        self.registry.register(
-            name="lookup_milestones",
-            description=LOOKUP_MILESTONES_DESCRIPTION,
-            parameters=LOOKUP_MILESTONES_SCHEMA,
-            func=lookup_milestones,
-        )
+        # 4. Utility Skill
+        utility_skill = UtilitySkill()
+        utility_skill.configure()
+
+        # Register all skills
+        self.skill_registry.add_skill(knowledge_skill)
+        self.skill_registry.add_skill(recommend_skill)
+        self.skill_registry.add_skill(profile_skill)
+        self.skill_registry.add_skill(utility_skill)
 
         self._initialized = True
         logger.info(
-            "GemAgent initialized with %d tools: %s",
-            len(self.registry),
-            self.registry.get_tool_names(),
+            "GemAgent initialized with %d skills (%d functions): %s",
+            len(self.skill_registry.get_skill_names()),
+            len(self.skill_registry),
+            self.skill_registry.get_all_function_names(),
         )
 
     # ------------------------------------------------------------------
@@ -211,7 +180,7 @@ class GemAgent:
     def run(self, question: str, history: List[Dict[str, str]] | None = None) -> str:
         """
         Full agent loop:
-            question rewrite → tool planning → tool execution → answer generation
+            question rewrite → function planning → function execution → answer generation
         """
         if not self._initialized:
             raise RuntimeError("GemAgent not initialized — call initialize() first")
@@ -221,15 +190,16 @@ class GemAgent:
         # Step 1: Rewrite question (for better retrieval, with fallback)
         rewritten_question = self._rewrite_question(question, history)
 
-        # Step 2: Plan which tools to call
-        tool_calls = self._plan_tools(rewritten_question, question, history)
+        # Step 2: Plan which functions to call
+        function_calls = self._plan_functions(rewritten_question, question, history)
 
-        # Step 3: Execute tools
-        tool_results = self._execute_tools(tool_calls, rewritten_question, question)
+        # Step 3: Execute functions via SkillRegistry
+        function_results = self._execute_functions(
+            function_calls, rewritten_question, question
+        )
 
         # Step 4: Generate final answer
-        answer = self._generate_answer(question, history, tool_results)
-        return answer
+        return self._generate_answer(question, history, function_results)
 
     # ------------------------------------------------------------------
     # Internal steps
@@ -251,65 +221,107 @@ class GemAgent:
             logger.warning("Question rewrite failed, using original: %s", exc)
             return question
 
-    def _plan_tools(
+    def _plan_functions(
         self,
         rewritten_question: str,
         original_question: str,
         history: List[Dict[str, str]],
     ) -> List[Dict[str, Any]]:
-        """Ask the LLM which tools to call and with what arguments."""
-        tool_schemas_text = json.dumps(
-            self.registry.get_tool_schemas(), ensure_ascii=False, indent=2
+        """Ask the LLM which functions to call and with what arguments."""
+        schemas_text = json.dumps(
+            self.skill_registry.get_all_function_schemas(),
+            ensure_ascii=False,
+            indent=2,
         )
         try:
             result = (self._planning_prompt | self.llm).invoke({
-                "tool_schemas": tool_schemas_text,
+                "tool_schemas": schemas_text,
                 "conversation_history": self._format_history(history),
                 "question": original_question,
             })
             raw = result.content.strip()
-            tool_calls = self._parse_tool_calls(raw)
-            logger.info(
-                "Tool planning decided: %s",
-                [tc.get("tool") for tc in tool_calls],
-            )
-            return tool_calls
-        except Exception as exc:
-            logger.warning("Tool planning failed, falling back to knowledge search: %s", exc)
-            # Fallback: just do a general knowledge search
-            return [{"tool": "search_knowledge_base", "arguments": {"query": rewritten_question}}]
+            calls = self._parse_function_calls(raw)
 
-    def _execute_tools(
+            # Enforce max-tool-calls limit
+            if len(calls) > self._max_tool_calls:
+                logger.warning(
+                    "LLM planned %d function calls, truncating to %d",
+                    len(calls), self._max_tool_calls,
+                )
+                calls = calls[: self._max_tool_calls]
+
+            logger.info(
+                "Function planning decided: %s",
+                [c.get("tool") for c in calls],
+            )
+            return calls
+        except Exception as exc:
+            logger.warning(
+                "Function planning failed, falling back to knowledge search: %s", exc
+            )
+            return [
+                {"tool": "search_knowledge_base", "arguments": {"query": rewritten_question}}
+            ]
+
+    def _execute_functions(
         self,
-        tool_calls: List[Dict[str, Any]],
+        function_calls: List[Dict[str, Any]],
         rewritten_question: str,
         original_question: str,
-    ) -> List[ToolResult]:
-        """Execute all planned tool calls and collect results."""
-        if not tool_calls:
-            logger.info("No tools to call — direct answer mode")
+    ) -> List[FunctionResult]:
+        """Execute all planned function calls via the SkillRegistry."""
+        if not function_calls:
+            logger.info("No functions to call — direct answer mode")
             return []
 
-        results: List[ToolResult] = []
-        for tc in tool_calls:
-            tool_name = tc.get("tool", "")
-            arguments = tc.get("arguments", {})
+        results: List[FunctionResult] = []
+        for fc in function_calls:
+            func_name = fc.get("tool", "")
+            arguments = fc.get("arguments", {})
 
-            # Enhance query arguments with rewritten question if applicable
-            if "query" in arguments and tool_name in (
+            # Ensure required 'query' param is present for retrieval functions
+            if func_name in (
                 "search_knowledge_base",
                 "search_concert_schedule",
             ):
-                # Use rewritten question for vector search benefit
-                original_arg = arguments["query"]
-                arguments["query"] = rewritten_question if rewritten_question != original_question else original_arg
+                if "query" not in arguments or not arguments["query"]:
+                    # LLM omitted the query — fill in with best available
+                    arguments["query"] = rewritten_question
+                    logger.warning(
+                        "Function '%s' missing 'query' arg, auto-filled with: %s",
+                        func_name, rewritten_question,
+                    )
+                else:
+                    # Enhance existing query with rewritten version if available
+                    original_arg = arguments["query"]
+                    arguments["query"] = (
+                        rewritten_question
+                        if rewritten_question != original_question
+                        else original_arg
+                    )
 
-            result = self.registry.invoke(tool_name, arguments)
+            # Same safeguard for song search
+            if func_name == "search_song_info":
+                if "song_name" not in arguments or not arguments["song_name"]:
+                    arguments["song_name"] = original_question
+                    logger.warning(
+                        "Function '%s' missing 'song_name' arg, auto-filled with: %s",
+                        func_name, original_question,
+                    )
+
+            result = self.skill_registry.invoke(func_name, arguments)
             results.append(result)
+
             if result.success:
-                logger.info("Tool '%s' succeeded (%d chars)", tool_name, len(result.data))
+                logger.info(
+                    "Function '%s' (skill '%s') succeeded (%d chars)",
+                    func_name, result.skill_name, len(result.data),
+                )
             else:
-                logger.warning("Tool '%s' failed: %s", tool_name, result.error)
+                logger.warning(
+                    "Function '%s' (skill '%s') failed: %s",
+                    func_name, result.skill_name, result.error,
+                )
 
         return results
 
@@ -317,30 +329,27 @@ class GemAgent:
         self,
         question: str,
         history: List[Dict[str, str]],
-        tool_results: List[ToolResult],
+        function_results: List[FunctionResult],
     ) -> str:
-        """Generate the final GEM-persona answer using tool results as context."""
-        # Build context from tool results
-        if tool_results:
+        """Generate the final GEM-persona answer using function results as context."""
+        # Build context from function results
+        if function_results:
             context_parts = []
-            for tr in tool_results:
-                if tr.success and tr.data:
-                    context_parts.append(f"【{tr.tool_name} 返回结果】\n{tr.data}")
-                elif not tr.success:
-                    context_parts.append(f"【{tr.tool_name} 调用失败】{tr.error}")
+            for fr in function_results:
+                if fr.success and fr.data:
+                    context_parts.append(
+                        f"【{fr.function_name} 返回结果】\n{fr.data}"
+                    )
+                elif not fr.success:
+                    context_parts.append(
+                        f"【{fr.function_name} 调用失败】{fr.error}"
+                    )
             context_text = "\n\n---\n\n".join(context_parts)
         else:
             context_text = "（无需检索资料，直接与粉丝聊天即可）"
 
-        # Find current time from tool results, or generate it
-        current_time = ""
-        for tr in tool_results:
-            if tr.tool_name == "get_current_datetime" and tr.success:
-                current_time = tr.data
-                break
-        if not current_time:
-            from datetime import datetime
-            current_time = datetime.now().strftime("%Y年%m月%d日 %H:%M")
+        # Extract current time from function results, or generate a fallback
+        current_time = self._extract_current_time(function_results)
 
         # Build message list
         messages = [("system", GEM_SYSTEM_PROMPT)]
@@ -373,12 +382,20 @@ class GemAgent:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _extract_current_time(function_results: List[FunctionResult]) -> str:
+        """Get time from function results if available, otherwise generate it."""
+        for fr in function_results:
+            if fr.function_name == "get_current_datetime" and fr.success:
+                return fr.data
+        return datetime.now().strftime("%Y年%m月%d日 %H:%M")
+
+    @staticmethod
     def _format_history(history: List[Dict[str, str]]) -> str:
         """Format conversation history for prompt injection."""
         if not history:
             return "无对话历史"
         parts = []
-        for i, turn in enumerate(history, 1):
+        for turn in history:
             role = turn.get("role", "unknown")
             content = turn.get("content", "")
             if role == "user":
@@ -388,12 +405,11 @@ class GemAgent:
         return "\n".join(parts)
 
     @staticmethod
-    def _parse_tool_calls(raw: str) -> List[Dict[str, Any]]:
+    def _parse_function_calls(raw: str) -> List[Dict[str, Any]]:
         """
-        Parse the LLM's JSON output into a list of tool call dicts.
+        Parse the LLM's JSON output into a list of function call dicts.
         Handles markdown code fences and minor formatting issues.
         """
-        # Strip markdown code fences if present
         cleaned = raw.strip()
         cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
         cleaned = re.sub(r"\s*```$", "", cleaned)
@@ -405,7 +421,6 @@ class GemAgent:
         try:
             parsed = json.loads(cleaned)
             if isinstance(parsed, list):
-                # Validate structure
                 valid = []
                 for item in parsed:
                     if isinstance(item, dict) and "tool" in item:
@@ -418,6 +433,9 @@ class GemAgent:
                     parsed["arguments"] = {}
                 return [parsed]
         except json.JSONDecodeError as exc:
-            logger.warning("Failed to parse tool calls JSON: %s\nRaw: %s", exc, raw[:500])
+            logger.warning(
+                "Failed to parse function calls JSON: %s\nRaw: %s",
+                exc, raw[:500],
+            )
 
         return []
