@@ -151,26 +151,102 @@ GEM_FAN_CLUB_RAG/
 
 ```mermaid
 graph TB
-    A[用户提问] --> B[FastAPI]
-    B --> C{运行模式?}
-    C -->|Agent| D[GemAgent]
-    C -->|RAG| E[传统 RAG Chain]
-    D --> F[问题重写]
-    F --> G[LLM 工具规划]
-    G --> H{选择工具}
-    H --> I[search_knowledge_base]
-    H --> J[search_concert_schedule]
-    H --> K[search_song_info]
-    H --> L[get_current_datetime]
-    H --> M[get_hot_songs_recommendation]
-    I & J & K --> N[混合检索: 向量 + BM25]
-    N --> O[RRF 重排序]
-    L --> P[时间信息]
-    M --> Q[歌曲推荐]
-    O & P & Q --> R[邓紫棋角色 Prompt]
-    R --> S[智谱 AI GLM-4.7]
-    S --> T[邓紫棋风格回答]
-    E --> N
+    %% ═══════════ 入口层 ═══════════
+    A["👤 用户提问<br/>(question + history)"] --> B["FastAPI /chat_gem<br/>参数校验: 1~500字, ≤20轮历史"]
+    B --> C{RUNTIME_MODE?}
+
+    %% ═══════════ Agent 模式 ═══════════
+    C -->|"agent (默认)"| D["GemAgent.run()"]
+
+    D --> D1["Step1: 问题重写<br/>_rewrite_question()"]
+    D1 -->|"LLM + QUESTION_REWRITE_PROMPT<br/>语义增强/指代消解"| D1a["重写后的问题"]
+    D1 -.->|"❌ 失败回退"| D1b["使用原始问题"]
+    D1b --> D1a
+
+    D1a --> D2["Step2: 工具规划<br/>_plan_tools()"]
+    D2 -->|"LLM + TOOL_PLANNING_PROMPT<br/>注入7个工具的JSON Schema<br/>temperature=0.1"| D2a["解析工具调用列表<br/>JSON: tool + arguments"]
+    D2 -.->|"❌ 解析失败回退"| D2b["默认调用<br/>search_knowledge_base"]
+    D2b --> D2a
+
+    D2a --> D3["Step3: 执行工具<br/>_execute_tools()<br/>最多3个工具调用"]
+
+    %% ═══════════ 7个工具 ═══════════
+    D3 --> T1["🔍 search_knowledge_base<br/>通用知识库搜索<br/>(生涯/个人/奖项)"]
+    D3 --> T2["📅 search_concert_schedule<br/>演唱会日程搜索"]
+    D3 --> T3["🎵 search_song_info<br/>特定歌曲搜索<br/>(歌词/创作背景)"]
+    D3 --> T4["⏰ get_current_datetime<br/>获取当前日期时间"]
+    D3 --> T5["🔥 get_hot_songs_recommendation<br/>热门歌曲推荐"]
+    D3 --> T6["📋 lookup_artist_profile<br/>结构化档案查询<br/>(零幻觉)"]
+    D3 --> T7["🏆 lookup_milestones<br/>里程碑事件查询<br/>(按年/类别筛选)"]
+
+    %% ═══════════ 工具 → 检索链 ═══════════
+    T1 --> HR["混合检索<br/>HybridRetriever"]
+    T2 --> HR_T["时间检索<br/>time_retriever (K=60)"]
+    T3 --> HR
+    T5 --> HR
+
+    HR_T --> SORT["sort_docs_by_date()<br/>按日期降序排列"]
+    SORT --> CTX
+
+    T4 --> DT["datetime.now()<br/>格式化时间信息"]
+    T6 --> SD1["内存缓存读取<br/>artist_profile.json"]
+    T7 --> SD2["内存缓存读取<br/>milestones.json"]
+
+    %% ═══════════ 混合检索详细流程 ═══════════
+    HR --> V["向量检索<br/>ChromaDB + ZhipuAI Embedding-3<br/>语义相似度 (K=30)"]
+    HR --> BM["BM25 检索<br/>jieba 分词 + 关键词匹配<br/>(K=30)"]
+    V & BM --> RRF["RRF 重排序<br/>Score = Σ 1/(k+rank), k=60<br/>双路命中文档得分最高"]
+    RRF --> TOP["取 Top-20 文档"]
+    TOP --> CTX
+
+    %% ═══════════ 汇聚生成回答 ═══════════
+    DT --> CTX["汇聚工具结果<br/>拼接为 context"]
+    SD1 --> CTX
+    SD2 --> CTX
+
+    CTX --> D4["Step4: 生成回答<br/>_generate_answer()"]
+    D4 --> PROMPT["构造消息列表<br/>[GEM_SYSTEM_PROMPT,<br/>...history (≤5轮),<br/>GEM_USER_PROMPT<br/>(current_time + context + question)]"]
+    PROMPT --> LLM["智谱 AI GLM-4-air"]
+    LLM --> ANS["💬 邓紫棋风格回答"]
+
+    %% ═══════════ RAG 模式 ═══════════
+    C -->|"rag"| E["传统 RAG Chain<br/>enhanced_rag_chain()"]
+
+    E --> E1["问题重写<br/>question_rewrite_prompt | llm"]
+    E1 -.->|"❌ 失败回退"| E1b["使用原始问题"]
+    E1b --> E2
+    E1 --> E2{"is_time_related_query()?<br/>检测时间关键词<br/>(最近/最新/即将/20XX年)"}
+
+    E2 -->|"是"| E3["time_retriever.retrieve()<br/>→ sort_docs_by_date()"]
+    E2 -->|"否"| E4["retriever.retrieve()"]
+    E3 --> E5
+    E4 --> E5["检索结果"]
+    E4 -.->|"❌ 混合检索失败"| E4b["降级: 纯向量检索<br/>db.as_retriever()"]
+    E4b --> E5
+    E4b -.->|"❌ 向量检索也失败"| ERR["raise RuntimeError"]
+
+    E5 --> E6["build_messages_with_history()<br/>→ [system, ...history, user]"]
+    E6 --> LLM
+
+    %% ═══════════ 样式定义 ═══════════
+    classDef entryStyle fill:#4A90D9,stroke:#2C5F8A,color:#fff,stroke-width:2px
+    classDef agentStyle fill:#7B68EE,stroke:#5A4FCF,color:#fff,stroke-width:2px
+    classDef toolStyle fill:#FF8C42,stroke:#CC6B2E,color:#fff,stroke-width:1.5px
+    classDef retrievalStyle fill:#2ECC71,stroke:#1FA855,color:#fff,stroke-width:2px
+    classDef llmStyle fill:#E74C3C,stroke:#C0392B,color:#fff,stroke-width:2px
+    classDef ragStyle fill:#9B59B6,stroke:#7D3C98,color:#fff,stroke-width:1.5px
+    classDef resultStyle fill:#F39C12,stroke:#D68910,color:#fff,stroke-width:2px
+    classDef errorStyle fill:#E74C3C,stroke:#C0392B,color:#fff,stroke-dasharray:5 5
+
+    class A,B entryStyle
+    class D,D1,D1a,D2,D2a,D3,D4,PROMPT agentStyle
+    class T1,T2,T3,T4,T5,T6,T7 toolStyle
+    class HR,HR_T,V,BM,RRF,TOP,SORT,CTX retrievalStyle
+    class LLM llmStyle
+    class E,E1,E2,E3,E4,E5,E6 ragStyle
+    class ANS resultStyle
+    class D1b,D2b,E1b,E4b,ERR errorStyle
+    class DT,SD1,SD2 toolStyle
 ```
 
 ## 📡 API 文档
