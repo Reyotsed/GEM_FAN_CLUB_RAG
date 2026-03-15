@@ -8,6 +8,7 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from langchain.schema import Document
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
@@ -26,6 +27,7 @@ from rag_modules.prompts import (
     QUESTION_REWRITE_USER_PROMPT
 )
 from agent.gem_agent import GemAgent
+from rag_modules.content_safety import check_content_safety
 import jieba
 import re
 
@@ -469,11 +471,26 @@ async def chat_with_gem(request: QueryRequest):
     try:
         logger.info(f"用户问题: {request.question} (模式: {RUNTIME_MODE})")
 
+        # ── 内容安全检查 ──────────────────────────────────────
+        safety_result = check_content_safety(request.question)
+        if safety_result.is_violation:
+            logger.warning(
+                "用户问题被安全检查拦截 [类型: %s, 命中: %s]，已替换为安全话题",
+                safety_result.violation_type,
+                safety_result.matched_keyword,
+            )
+            # 将违规问题替换为安全的邓紫棋相关话题
+            safe_question = safety_result.safe_replacement
+            logger.info(f"安全替代问题: {safe_question}")
+        else:
+            safe_question = request.question
+        # ─────────────────────────────────────────────────────
+
         if RUNTIME_MODE == "agent" and gem_agent is not None:
             # Agent mode: LLM autonomously decides which tools to call
             response_text = await asyncio.to_thread(
                 gem_agent.run,
-                request.question,
+                safe_question,
                 request.history,
             )
         else:
@@ -481,7 +498,7 @@ async def chat_with_gem(request: QueryRequest):
             response_text = await asyncio.to_thread(
                 enhanced_rag_chain,
                 {
-                    "question": request.question,
+                    "question": safe_question,
                     "history": request.history,
                 }
             )
@@ -493,6 +510,84 @@ async def chat_with_gem(request: QueryRequest):
     except Exception as e:
         logger.error(f"处理请求时发生错误: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"AI服务处理请求时发生内部错误: {str(e)}")
+
+
+@app.post("/chat_gem/stream", summary="与邓紫棋AI聊天（流式响应）")
+async def chat_with_gem_stream(request: QueryRequest):
+    """SSE streaming endpoint — streams tokens as they are generated."""
+    import json as _json
+
+    logger.info(f"[Stream] 用户问题: {request.question} (模式: {RUNTIME_MODE})")
+
+    # ── 内容安全检查 ──
+    safety_result = check_content_safety(request.question)
+    if safety_result.is_violation:
+        logger.warning(
+            "[Stream] 用户问题被安全检查拦截 [类型: %s, 命中: %s]",
+            safety_result.violation_type, safety_result.matched_keyword,
+        )
+        safe_question = safety_result.safe_replacement
+    else:
+        safe_question = request.question
+
+    async def event_generator():
+        """Yield SSE-formatted events with true token-level streaming."""
+        try:
+            if RUNTIME_MODE == "agent" and gem_agent is not None:
+                # Use an asyncio.Queue to bridge the sync generator → async stream
+                queue: asyncio.Queue = asyncio.Queue()
+                _SENTINEL = object()  # marks end of generator
+                loop = asyncio.get_event_loop()
+
+                def _producer():
+                    """Run the sync generator in a worker thread, push events to queue."""
+                    try:
+                        for evt in gem_agent.run_stream(safe_question, request.history):
+                            # asyncio.Queue is NOT thread-safe; must use call_soon_threadsafe
+                            loop.call_soon_threadsafe(queue.put_nowait, evt)
+                    except Exception as exc:
+                        loop.call_soon_threadsafe(
+                            queue.put_nowait,
+                            {"event": "error", "data": {"message": str(exc)}},
+                        )
+                    finally:
+                        loop.call_soon_threadsafe(queue.put_nowait, _SENTINEL)
+
+                # Start the blocking producer in a background thread
+                loop.run_in_executor(None, _producer)
+
+                # Consume from the queue asynchronously
+                while True:
+                    evt = await queue.get()
+                    if evt is _SENTINEL:
+                        break
+                    event_type = evt.get("event", "token")
+                    data = _json.dumps(evt.get("data", {}), ensure_ascii=False)
+                    yield f"event: {event_type}\ndata: {data}\n\n"
+            else:
+                # Legacy RAG mode — no streaming, fall back to single-shot
+                yield f"event: status\ndata: {_json.dumps({'stage': 'generating', 'message': '正在生成回答...'}, ensure_ascii=False)}\n\n"
+                response_text = await asyncio.to_thread(
+                    enhanced_rag_chain,
+                    {"question": safe_question, "history": request.history},
+                )
+                yield f"event: token\ndata: {_json.dumps({'content': response_text}, ensure_ascii=False)}\n\n"
+                yield f"event: done\ndata: {{}}\n\n"
+
+        except Exception as exc:
+            logger.error(f"[Stream] 处理请求时发生错误: {str(exc)}", exc_info=True)
+            error_data = _json.dumps({"message": str(exc)}, ensure_ascii=False)
+            yield f"event: error\ndata: {error_data}\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",  # Disable nginx buffering
+        },
+    )
 
 
 @app.get("/", summary="服务健康检查")

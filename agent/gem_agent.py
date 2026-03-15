@@ -24,7 +24,7 @@ import logging
 import os
 import re
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, Generator, List
 
 from langchain.prompts import ChatPromptTemplate
 from langchain_community.chat_models.zhipuai import ChatZhipuAI
@@ -200,6 +200,55 @@ class GemAgent:
 
         # Step 4: Generate final answer
         return self._generate_answer(question, history, function_results)
+
+    def run_stream(
+        self, question: str, history: List[Dict[str, str]] | None = None
+    ) -> Generator[Dict[str, Any], None, None]:
+        """
+        Streaming version of run().
+        Steps 1-3 execute synchronously (their output is internal),
+        then Step 4 streams the final answer token-by-token.
+
+        Yields dicts of the form:
+            {"event": "status", "data": {"stage": "...", "message": "..."}}
+            {"event": "token",  "data": {"content": "..."}}
+            {"event": "done",   "data": {}}
+            {"event": "error",  "data": {"message": "..."}}
+        """
+        if not self._initialized:
+            yield {"event": "error", "data": {"message": "Agent 未初始化"}}
+            return
+
+        history = history or []
+
+        try:
+            # Step 1: Rewrite question
+            yield {"event": "status", "data": {"stage": "thinking", "message": "正在思考中..."}}
+            rewritten_question = self._rewrite_question(question, history)
+
+            # Step 2: Plan which functions to call
+            yield {"event": "status", "data": {"stage": "planning", "message": "正在分析问题..."}}
+            function_calls = self._plan_functions(rewritten_question, question, history)
+
+            # Step 3: Execute functions
+            if function_calls:
+                yield {"event": "status", "data": {"stage": "searching", "message": "正在查找资料..."}}
+                function_results = self._execute_functions(
+                    function_calls, rewritten_question, question
+                )
+            else:
+                function_results = []
+
+            # Step 4: Stream the final answer
+            yield {"event": "status", "data": {"stage": "generating", "message": "正在组织回答..."}}
+            for token_chunk in self._generate_answer_stream(question, history, function_results):
+                yield {"event": "token", "data": {"content": token_chunk}}
+
+            yield {"event": "done", "data": {}}
+
+        except Exception as exc:
+            logger.error("run_stream failed: %s", exc, exc_info=True)
+            yield {"event": "error", "data": {"message": str(exc)}}
 
     # ------------------------------------------------------------------
     # Internal steps
@@ -377,6 +426,55 @@ class GemAgent:
             logger.error("Answer generation failed: %s", exc, exc_info=True)
             raise RuntimeError("AI回答生成失败，请稍后重试") from exc
 
+    def _generate_answer_stream(
+        self,
+        question: str,
+        history: List[Dict[str, str]],
+        function_results: List[FunctionResult],
+    ) -> Generator[str, None, None]:
+        """Streaming version of _generate_answer. Yields token strings."""
+        # Build context from function results (same logic as _generate_answer)
+        if function_results:
+            context_parts = []
+            for fr in function_results:
+                if fr.success and fr.data:
+                    context_parts.append(
+                        f"【{fr.function_name} 返回结果】\n{fr.data}"
+                    )
+                elif not fr.success:
+                    context_parts.append(
+                        f"【{fr.function_name} 调用失败】{fr.error}"
+                    )
+            context_text = "\n\n---\n\n".join(context_parts)
+        else:
+            context_text = "（无需检索资料，直接与粉丝聊天即可）"
+
+        current_time = self._extract_current_time(function_results)
+
+        messages = [("system", GEM_SYSTEM_PROMPT)]
+        for turn in history[-self.config.HISTORY_MAX_TURNS:]:
+            role = turn.get("role", "")
+            content = turn.get("content", "")
+            if role in ("user", "assistant"):
+                messages.append((role, content))
+
+        user_message = GEM_USER_PROMPT.format(
+            current_time=current_time,
+            context=context_text,
+            question=question,
+        )
+        messages.append(("user", user_message))
+
+        try:
+            prompt = ChatPromptTemplate.from_messages(messages)
+            # Use .stream() instead of .invoke() for token-by-token output
+            for chunk in self.llm.stream(prompt.invoke({})):
+                if chunk.content:
+                    yield chunk.content
+        except Exception as exc:
+            logger.error("Answer stream generation failed: %s", exc, exc_info=True)
+            raise RuntimeError("AI回答生成失败，请稍后重试") from exc
+
     # ------------------------------------------------------------------
     # Helpers
     # ------------------------------------------------------------------
@@ -408,34 +506,105 @@ class GemAgent:
     def _parse_function_calls(raw: str) -> List[Dict[str, Any]]:
         """
         Parse the LLM's JSON output into a list of function call dicts.
-        Handles markdown code fences and minor formatting issues.
+        Handles markdown code fences, duplicated JSON blocks, and minor formatting issues.
         """
         cleaned = raw.strip()
-        cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned)
-        cleaned = re.sub(r"\s*```$", "", cleaned)
-        cleaned = cleaned.strip()
 
-        if not cleaned or cleaned == "[]":
-            return []
+        # 策略1: 优先提取 markdown 代码块内的 JSON 内容
+        # 匹配所有 ```json ... ``` 或 ``` ... ``` 代码块
+        fenced_blocks = re.findall(r"```(?:json)?\s*\n?(.*?)\n?\s*```", cleaned, re.DOTALL)
+        
+        # 收集候选 JSON 文本：代码块内容 + 代码块外的裸文本
+        candidates = []
+        
+        if fenced_blocks:
+            # 有代码块时，优先尝试代码块内的内容
+            for block in fenced_blocks:
+                block = block.strip()
+                if block:
+                    candidates.append(block)
+            
+            # 也尝试去掉所有代码块后的裸文本
+            bare_text = re.sub(r"```(?:json)?\s*\n?.*?\n?\s*```", "", cleaned, flags=re.DOTALL).strip()
+            if bare_text:
+                candidates.append(bare_text)
+        else:
+            # 没有代码块，直接用原始清理后的文本
+            candidates.append(cleaned)
 
-        try:
-            parsed = json.loads(cleaned)
-            if isinstance(parsed, list):
-                valid = []
-                for item in parsed:
-                    if isinstance(item, dict) and "tool" in item:
-                        if "arguments" not in item:
-                            item["arguments"] = {}
-                        valid.append(item)
-                return valid
-            elif isinstance(parsed, dict) and "tool" in parsed:
-                if "arguments" not in parsed:
-                    parsed["arguments"] = {}
-                return [parsed]
-        except json.JSONDecodeError as exc:
+        # 策略2: 依次尝试每个候选文本进行 JSON 解析
+        for candidate in candidates:
+            candidate = candidate.strip()
+            if not candidate or candidate == "[]":
+                continue
+
+            try:
+                parsed = json.loads(candidate)
+                return GemAgent._validate_function_calls(parsed)
+            except json.JSONDecodeError:
+                pass
+
+            # 策略3: 如果候选文本包含多行，尝试逐行找第一个有效 JSON
+            # 处理类似 "[]\n[]" 的情况
+            if "\n" in candidate:
+                for line in candidate.split("\n"):
+                    line = line.strip()
+                    if not line or line == "[]":
+                        continue
+                    try:
+                        parsed = json.loads(line)
+                        result = GemAgent._validate_function_calls(parsed)
+                        if result:  # 只返回非空的有效结果
+                            return result
+                    except json.JSONDecodeError:
+                        continue
+
+        # 策略4: 最后兜底 - 尝试用最外层方括号/花括号提取 JSON
+        # 找到第一个 [ 到最后一个 ] 的区间
+        first_bracket = cleaned.find("[")
+        if first_bracket != -1:
+            # 寻找与之匹配的 ]
+            depth = 0
+            for i in range(first_bracket, len(cleaned)):
+                if cleaned[i] == "[":
+                    depth += 1
+                elif cleaned[i] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        json_str = cleaned[first_bracket:i + 1]
+                        try:
+                            parsed = json.loads(json_str)
+                            return GemAgent._validate_function_calls(parsed)
+                        except json.JSONDecodeError:
+                            break
+
+        # 所有候选文本都是空的 "[]"，返回空列表（这不算错误）
+        all_empty = all(
+            c.strip() in ("", "[]") for c in candidates
+        )
+        if not all_empty:
             logger.warning(
-                "Failed to parse function calls JSON: %s\nRaw: %s",
-                exc, raw[:500],
+                "Failed to parse function calls JSON from any candidate.\nRaw: %s",
+                raw[:500],
             )
 
+        return []
+
+    @staticmethod
+    def _validate_function_calls(parsed) -> List[Dict[str, Any]]:
+        """
+        Validate and normalize parsed JSON into a list of function call dicts.
+        """
+        if isinstance(parsed, list):
+            valid = []
+            for item in parsed:
+                if isinstance(item, dict) and "tool" in item:
+                    if "arguments" not in item:
+                        item["arguments"] = {}
+                    valid.append(item)
+            return valid
+        elif isinstance(parsed, dict) and "tool" in parsed:
+            if "arguments" not in parsed:
+                parsed["arguments"] = {}
+            return [parsed]
         return []
