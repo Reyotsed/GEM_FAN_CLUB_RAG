@@ -76,7 +76,7 @@ VECTOR_DB_BATCH_SIZE: int = int(os.getenv("VECTOR_DB_BATCH_SIZE", "50"))
 # 从环境变量读取允许的来源，如果没有则使用默认值（仅开发环境）
 CORS_ORIGINS: List[str] = os.getenv(
     "CORS_ORIGINS", 
-    "http://localhost:3000,http://localhost:8080,http://localhost:5173"
+    "http://localhost:3000,http://localhost:8080,http://localhost:5173,http://localhost:7071,http://gemfanclub.com,https://gemfanclub.com,http://www.gemfanclub.com,https://www.gemfanclub.com,http://140.143.246.54,http://140.143.246.54:7071,https://localhost,capacitor://localhost,http://localhost"
 ).split(",")
 # CORS是否允许凭证
 CORS_ALLOW_CREDENTIALS: bool = os.getenv("CORS_ALLOW_CREDENTIALS", "true").lower() == "true"
