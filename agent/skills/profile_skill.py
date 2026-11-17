@@ -132,18 +132,45 @@ class ProfileSkill(BaseSkill):
         milestones_path = structured_dir / "milestones.json"
 
         if profile_path.exists():
-            with open(profile_path, "r", encoding="utf-8") as f:
-                self._profile = json.load(f)
-            logger.info(
-                "Loaded artist_profile.json (%d top-level keys)", len(self._profile)
-            )
+            try:
+                with open(profile_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, dict):
+                    self._profile = data
+                    logger.info(
+                        "Loaded artist_profile.json (%d top-level keys)",
+                        len(self._profile),
+                    )
+                else:
+                    logger.warning(
+                        "artist_profile.json top-level is %s, expected dict — skipping",
+                        type(data).__name__,
+                    )
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning(
+                    "Failed to load artist_profile.json: %s", exc
+                )
         else:
             logger.warning("artist_profile.json not found at %s", profile_path)
 
         if milestones_path.exists():
-            with open(milestones_path, "r", encoding="utf-8") as f:
-                self._milestones = json.load(f)
-            logger.info("Loaded milestones.json (%d events)", len(self._milestones))
+            try:
+                with open(milestones_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self._milestones = data
+                    logger.info(
+                        "Loaded milestones.json (%d events)", len(self._milestones)
+                    )
+                else:
+                    logger.warning(
+                        "milestones.json top-level is %s, expected list — skipping",
+                        type(data).__name__,
+                    )
+            except (json.JSONDecodeError, OSError) as exc:
+                logger.warning(
+                    "Failed to load milestones.json: %s", exc
+                )
         else:
             logger.warning("milestones.json not found at %s", milestones_path)
 

@@ -11,6 +11,8 @@ from agent.skills.knowledge_skill import KnowledgeSkill
 from agent.skills.recommend_skill import RecommendSkill
 from agent.skills.profile_skill import ProfileSkill
 from agent.skills.utility_skill import UtilitySkill
+from agent.skills.websearch_skill import WebSearchSkill
+from agent.skills.photo_skill import PhotoSkill
 
 __all__ = [
     "BaseSkill",
@@ -21,4 +23,6 @@ __all__ = [
     "RecommendSkill",
     "ProfileSkill",
     "UtilitySkill",
+    "WebSearchSkill",
+    "PhotoSkill",
 ]

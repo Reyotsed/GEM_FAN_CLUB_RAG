@@ -1,4 +1,4 @@
 """
-RAG Modules Package
-Contains core components for the G.E.M. Fan Club RAG system.
+RAG 模块包
+包含邓紫棋粉丝俱乐部 RAG 系统的核心组件。
 """

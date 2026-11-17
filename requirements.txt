@@ -4,8 +4,10 @@ uvicorn[standard]==0.35.0
 python-multipart==0.0.20
 # 数据验证
 pydantic==2.10.4
+pydantic-settings>=2.6.0,<3.0.0
 # LangChain生态系统 (使用兼容版本)
 langchain==0.3.27
+langchain-core>=0.3.40,<0.4.0
 langchain-community==0.3.27
 langchain-chroma==0.2.5
 # 向量数据库
@@ -13,12 +15,28 @@ chromadb==1.0.20
 # 智谱AI
 zhipuai==2.1.5.20250825
 
-# 其他依赖
-pathlib2==2.3.7; python_version < "3.4"
+# 环境变量
+python-dotenv==1.0.1
 # 文档处理依赖
 python-docx==1.2.0
+
+# ==================== Industrial-grade additions ====================
+# 结构化日志
+structlog>=24.1.0,<26.0.0
+# Tokenizer for context budget
+tiktoken>=0.7.0
+# Prometheus metrics
+prometheus-client>=0.20.0
+# Memory layer
+redis>=5.0.0,<6.0.0
+asyncpg>=0.29.0,<0.31.0
+pgvector>=0.3.0,<0.5.0
+
 # 开发依赖（可选）
 pytest==7.4.4
 pytest-asyncio==0.21.1
-# 可选依赖（用于歌词获取脚本）
-pyncm==1.7.1
+fakeredis>=2.23.0
+# 实时网络检索（WebSearchSkill，调用 Tavily API）
+requests>=2.31.0
+# 图片检索 BM25（PhotoSkill）
+rank_bm25>=0.2.2,<0.3.0

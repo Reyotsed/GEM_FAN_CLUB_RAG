@@ -1,20 +1,23 @@
 """
-GEM Agent — Skill-based RAG Agent for GEM Fan Club.
+邓紫棋 Agent — 基于技能的 RAG Agent。
 
-This module implements a ReAct-style agent loop using prompt-based
-function calling (compatible with any LLM, including ChatZhipuAI which has
-limited native function-calling support in LangChain).
+使用提示词驱动的函数调用实现 ReAct 风格的 Agent 循环
+（兼容任何 LLM，包括 ChatZhipuAI）。
 
-Architecture (v2.0 — Skill-based):
-    Skills are domain-grouped bundles of functions.  The SkillRegistry
-    aggregates all skills and exposes a flat function list to the LLM,
-    while internally routing each call to its owning Skill.
+架构（v2.6 — 模块化编排 Agent）：
+    技能（Skill）是按领域分组的函数集合。SkillRegistry 聚合所有技能，
+    向 LLM 暴露扁平函数列表，内部将调用路由到所属技能。
 
-Flow:
-    1. User question + history → LLM rewrites question for better retrieval
-    2. LLM plans which function(s) to call (sees flat function list)
-    3. Agent dispatches calls via SkillRegistry → owning Skill executes
-    4. LLM generates final persona-rich answer using function results + history
+    v2.6 变更：
+    • 核心逻辑按阶段拆分到 ``agent.core.*`` 子模块（planner / rewriter /
+      executor / responder）
+    • GemAgent 类自身仅保留编排逻辑（init / initialize / run / run_stream）
+
+流程：
+    1. 问题重写（LLM） + 策略选择（规则引擎，~0ms）
+    2. LLM 规划调用哪些函数（看到扁平函数列表）
+    3. Agent 通过 SkillRegistry 分派调用 → 所属技能执行
+    4. LLM 生成最终人设回答（结合函数结果 + 策略增强提示 + 历史）
 """
 
 from __future__ import annotations
@@ -22,9 +25,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
-from datetime import datetime
-from typing import Any, Dict, Generator, List
+import threading
+from typing import Any, Dict, Generator, List, Optional
 
 from langchain.prompts import ChatPromptTemplate
 from langchain_community.chat_models.zhipuai import ChatZhipuAI
@@ -35,98 +37,89 @@ from agent.skills import (
     RecommendSkill,
     ProfileSkill,
     UtilitySkill,
-    FunctionResult,
+    WebSearchSkill,
+    PhotoSkill,
+)
+from agent.prompt_strategy import PromptStrategySelector
+from agent.trace import AgentTrace
+from agent.llm_guard import GuardConfig, get_fallback_reply
+from agent.core.planner import (
+    TOOL_PLANNING_SYSTEM_PROMPT,
+    TOOL_PLANNING_USER_PROMPT,
+    plan_functions,
+    extract_photo_count,
+)
+from agent.core.rewriter import rewrite_question
+from agent.core.executor import execute_functions, extract_photo_payload
+from agent.core.responder import (
+    generate_answer,
+    generate_answer_stream,
+    apply_memory_context as apply_mem_ctx,
+    format_history,
 )
 from rag_modules.prompts import (
-    GEM_SYSTEM_PROMPT,
-    GEM_USER_PROMPT,
     QUESTION_REWRITE_SYSTEM_PROMPT,
     QUESTION_REWRITE_USER_PROMPT,
 )
 
 logger = logging.getLogger(__name__)
 
-# ─── Prompt for the PLANNING step (function selection) ──────────────────
-
-TOOL_PLANNING_SYSTEM_PROMPT = """\
-你是邓紫棋（G.E.M.）的智能助手调度器。你的职责是分析粉丝的问题，决定需要调用哪些工具来获取信息。
-
-## 可用工具
-
-{tool_schemas}
-
-## 规则
-1. 仔细分析问题，选择**最合适**的工具（可以同时选择多个）。
-2. 如果问题涉及时间（如"最近"、"下一场"、某个年份），**必须**同时调用 `get_current_datetime` 和相关检索工具。
-3. **事实性问题**（生日、星座、家庭、专辑列表、巡演列表、奖项、记录等），**优先**使用 `lookup_artist_profile`。
-4. **时间线问题**（某年发生了什么、某事件是什么时候），**优先**使用 `lookup_milestones`。
-5. 如果问题涉及某首具体歌曲，优先使用 `search_song_info`。
-6. 如果问题涉及演唱会、巡演的具体场次信息，优先使用 `search_concert_schedule`。
-7. 如果问题是推荐歌曲、好听的歌，使用 `get_hot_songs_recommendation`。
-8. 如果结构化数据不足以回答（如需要详细叙述、背景故事），再用 `search_knowledge_base` 补充。
-9. 如果是简单闲聊（如"你好"、"在吗"），可以选择不调用任何工具，返回空列表。
-10. 结合对话历史理解上下文（如代词指代）。
-
-## 输出格式
-你**必须且只能**输出一个 JSON 数组，每个元素是一个工具调用对象。格式如下：
-
-```json
-[
-  {{"tool": "工具名称", "arguments": {{"参数名": "参数值"}}}}
-]
-```
-
-如果不需要工具，输出空数组：
-```json
-[]
-```
-
-**不要输出任何其他文字，只输出 JSON 数组。**
-"""
-
-TOOL_PLANNING_USER_PROMPT = """\
-## 对话历史
-{conversation_history}
-
-## 当前问题
-{question}
-
-请分析上述问题，输出需要调用的工具列表（JSON 数组）：
-"""
-
 
 class GemAgent:
     """
-    Skill-based RAG Agent for GEM Fan Club.
+    基于技能的 RAG Agent。
 
-    Lifecycle::
-
+    生命周期::
         agent = GemAgent(llm, config)
         agent.initialize(retriever, time_retriever, sort_fn)
         answer = agent.run(question, history)
     """
 
-    def __init__(self, llm: ChatZhipuAI, app_config: Any) -> None:
+    def __init__(
+        self,
+        llm: ChatZhipuAI,
+        app_config: Any,
+        fast_llm: Optional[ChatZhipuAI] = None,
+    ) -> None:
         self.llm = llm
+        self.fast_llm = fast_llm or llm
         self.config = app_config
         self.skill_registry = SkillRegistry()
         self._initialized = False
 
-        # Read max-tool-calls limit from config (default 3)
         self._max_tool_calls: int = getattr(app_config, "AGENT_MAX_TOOL_CALLS", 3)
+        self._strategy_selector = PromptStrategySelector()
+        self._guard_config = GuardConfig(
+            max_retries=getattr(app_config, "AGENT_LLM_MAX_RETRIES", 2),
+            planning_max_retries=getattr(app_config, "AGENT_PLANNING_MAX_RETRIES", 2),
+        )
 
         # Prompt templates
-        self._planning_prompt = ChatPromptTemplate.from_messages([
-            ("system", TOOL_PLANNING_SYSTEM_PROMPT),
-            ("user", TOOL_PLANNING_USER_PROMPT),
-        ])
-        self._rewrite_prompt = ChatPromptTemplate.from_messages([
-            ("system", QUESTION_REWRITE_SYSTEM_PROMPT),
-            ("user", QUESTION_REWRITE_USER_PROMPT),
-        ])
+        self._planning_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", TOOL_PLANNING_SYSTEM_PROMPT),
+                ("user", TOOL_PLANNING_USER_PROMPT),
+            ]
+        )
+        self._rewrite_prompt = ChatPromptTemplate.from_messages(
+            [
+                ("system", QUESTION_REWRITE_SYSTEM_PROMPT),
+                ("user", QUESTION_REWRITE_USER_PROMPT),
+            ]
+        )
+
+        # Per-request state (protected by _request_lock)
+        self._request_lock = threading.RLock()
+        self._active_trace: Optional[AgentTrace] = None
+        self._memory_fields: Dict[str, str] = {"summary": "", "long_term": "", "profile": ""}
+        self.last_photo_urls: List[str] = []
+
+        # Injected by AppContainer (setattr for backward compat)
+        self.memory_service: Any = None
+        self.context_manager: Any = None
 
     # ------------------------------------------------------------------
-    # Initialisation (called once after retrievers are ready)
+    # 初始化
     # ------------------------------------------------------------------
 
     def initialize(
@@ -134,10 +127,12 @@ class GemAgent:
         retriever,
         time_retriever,
         sort_docs_fn,
+        photo_repo=None,
+        photo_default_k: int = 3,
+        photo_max_k: int = 6,
     ) -> None:
-        """Wire up skills with runtime dependencies (retrievers etc.)."""
-
-        # 1. Knowledge Skill
+        """注入运行时依赖（检索器等），连接各技能。"""
+        # 1. 知识技能
         knowledge_skill = KnowledgeSkill()
         knowledge_skill.configure(
             retriever=retriever,
@@ -146,26 +141,50 @@ class GemAgent:
             num_results=self.config.HYBRID_RETRIEVER_NUM_RESULTS,
         )
 
-        # 2. Recommend Skill
+        # 2. 推荐技能
         recommend_skill = RecommendSkill()
         recommend_skill.configure(retriever=retriever)
 
-        # 3. Profile Skill
+        # 3. 档案技能
         profile_skill = ProfileSkill()
         structured_dir = os.path.join(self.config.DATA_PATH, "structured")
         profile_skill.configure(structured_data_dir=structured_dir)
 
-        # 4. Utility Skill
+        # 4. 工具技能
         utility_skill = UtilitySkill()
         utility_skill.configure()
 
-        # Register all skills
+        # 5. 实时网络检索技能
+        websearch_skill = WebSearchSkill()
+        websearch_skill.configure(
+            api_key=getattr(self.config, "TAVILY_API_KEY", None),
+            max_results=getattr(self.config, "TAVILY_MAX_RESULTS", 5),
+            search_depth=getattr(self.config, "TAVILY_SEARCH_DEPTH", "basic"),
+            timeout=getattr(self.config, "TAVILY_TIMEOUT", 15.0),
+        )
+
+        # 注册所有技能
         self.skill_registry.add_skill(knowledge_skill)
         self.skill_registry.add_skill(recommend_skill)
         self.skill_registry.add_skill(profile_skill)
         self.skill_registry.add_skill(utility_skill)
+        if getattr(self.config, "TAVILY_API_KEY", None):
+            self.skill_registry.add_skill(websearch_skill)
+
+        # 6. 图片检索技能
+        if photo_repo is not None:
+            photo_skill = PhotoSkill()
+            photo_skill.configure(
+                photo_repo=photo_repo,
+                default_k=photo_default_k,
+                max_k=photo_max_k,
+            )
+            self.skill_registry.add_skill(photo_skill)
 
         self._initialized = True
+        self._guard_config.planning_known_tools = set(
+            self.skill_registry.get_all_function_names()
+        )
         logger.info(
             "GemAgent initialized with %d skills (%d functions): %s",
             len(self.skill_registry.get_skill_names()),
@@ -174,437 +193,253 @@ class GemAgent:
         )
 
     # ------------------------------------------------------------------
-    # Public entry point
+    # 注入服务（供 AppContainer 使用）
     # ------------------------------------------------------------------
 
-    def run(self, question: str, history: List[Dict[str, str]] | None = None) -> str:
-        """
-        Full agent loop:
-            question rewrite → function planning → function execution → answer generation
+    def inject_services(self, *, memory_service: Any = None, context_manager: Any = None) -> None:
+        """Set memory_service and context_manager after construction."""
+        if memory_service is not None:
+            self.memory_service = memory_service
+        if context_manager is not None:
+            self.context_manager = context_manager
+
+    # ------------------------------------------------------------------
+    # 公共入口
+    # ------------------------------------------------------------------
+
+    def run(
+        self,
+        question: str,
+        history: List[Dict[str, str]] | None = None,
+        memory_context: Optional[Dict[str, str]] = None,
+    ) -> str:
+        """完整Agent循环（v2.6 — 模块化编排）。
+        问题重写 + 策略选择 → 函数规划 → 函数执行 → 回答生成
         """
         if not self._initialized:
             raise RuntimeError("GemAgent not initialized — call initialize() first")
 
+        with self._request_lock:
+            return self._run_locked(question, history, memory_context)
+
+    def _run_locked(
+        self,
+        question: str,
+        history: List[Dict[str, str]] | None = None,
+        memory_context: Optional[Dict[str, str]] = None,
+    ) -> str:
         history = history or []
+        trace = AgentTrace(question=question)
+        self._active_trace = trace
+        apply_mem_ctx(self._memory_fields, memory_context)
+        self.last_photo_urls = []
 
-        # Step 1: Rewrite question (for better retrieval, with fallback)
-        rewritten_question = self._rewrite_question(question, history)
+        logger.info("==== 收到 query: %r (history=%d turns) ====", question, len(history))
 
-        # Step 2: Plan which functions to call
-        function_calls = self._plan_functions(rewritten_question, question, history)
+        # ── 阶段1：问题重写 + 策略选择 ──
+        with trace.stage("rewrite"):
+            rewritten = rewrite_question(
+                fast_llm=self.fast_llm,
+                rewrite_prompt=self._rewrite_prompt,
+                question=question,
+                history=history,
+                guard_config=self._guard_config,
+                format_history_fn=format_history,
+            )
 
-        # Step 3: Execute functions via SkillRegistry
-        function_results = self._execute_functions(
-            function_calls, rewritten_question, question
-        )
+        with trace.stage("strategy", detail="") as stage:
+            strategy_result = self._strategy_selector.select(question)
+            stage.detail = (
+                ", ".join(strategy_result.strategy_names)
+                if strategy_result.matched_strategies
+                else "(none)"
+            )
 
-        # Step 4: Generate final answer
-        return self._generate_answer(question, history, function_results)
+        # ── 阶段2：规划 ──
+        with trace.stage("planning"):
+            function_calls = plan_functions(
+                fast_llm=self.fast_llm,
+                planning_prompt=self._planning_prompt,
+                skill_registry=self.skill_registry,
+                rewritten_question=rewritten,
+                original_question=question,
+                history=history,
+                guard_config=self._guard_config,
+                max_tool_calls=self._max_tool_calls,
+                format_history_fn=format_history,
+            )
+
+        # ── 阶段3：执行 ──
+        with trace.stage("execute", detail=", ".join(fc.get("tool", "") for fc in function_calls)):
+            function_results = execute_functions(
+                skill_registry=self.skill_registry,
+                function_calls=function_calls,
+                rewritten_question=rewritten,
+                original_question=question,
+                extract_photo_count_fn=extract_photo_count,
+            )
+
+        # 缓存图片 URL 供外部调用者使用
+        for fr in function_results:
+            if fr.function_name == "search_gem_photos" and fr.success and fr.data:
+                try:
+                    obj = json.loads(fr.data)
+                    items = (obj or {}).get("items") or []
+                    self.last_photo_urls = [
+                        item["url"]
+                        for item in items
+                        if isinstance(item, dict) and item.get("url")
+                    ]
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # ── 阶段4：生成回答 ──
+        try:
+            with trace.stage("generate"):
+                answer = generate_answer(
+                    llm=self.llm,
+                    question=question,
+                    history=history,
+                    function_results=function_results,
+                    strategy_result=strategy_result,
+                    guard_config=self._guard_config,
+                    context_manager=getattr(self, "context_manager", None),
+                    memory_fields=self._memory_fields,
+                    history_max_turns=getattr(self.config, "HISTORY_MAX_TURNS", 10),
+                    active_trace=trace,
+                )
+
+            trace.set_extra("tools_called", [fc.get("tool") for fc in function_calls])
+            trace.set_extra("strategies", strategy_result.strategy_names)
+            trace.print_summary()
+            return answer
+
+        finally:
+            self._active_trace = None
+            apply_mem_ctx(self._memory_fields, None)
 
     def run_stream(
-        self, question: str, history: List[Dict[str, str]] | None = None
+        self,
+        question: str,
+        history: List[Dict[str, str]] | None = None,
+        memory_context: Optional[Dict[str, str]] = None,
     ) -> Generator[Dict[str, Any], None, None]:
-        """
-        Streaming version of run().
-        Steps 1-3 execute synchronously (their output is internal),
-        then Step 4 streams the final answer token-by-token.
-
-        Yields dicts of the form:
-            {"event": "status", "data": {"stage": "...", "message": "..."}}
-            {"event": "token",  "data": {"content": "..."}}
-            {"event": "done",   "data": {}}
-            {"event": "error",  "data": {"message": "..."}}
+        """run() 的流式版本（v2.6 — 模块化编排）。
+        阶段1-3同步执行，阶段4逐token流式输出最终回答。
         """
         if not self._initialized:
             yield {"event": "error", "data": {"message": "Agent 未初始化"}}
             return
 
+        with self._request_lock:
+            yield from self._run_stream_locked(question, history, memory_context)
+
+    def _run_stream_locked(
+        self,
+        question: str,
+        history: List[Dict[str, str]] | None = None,
+        memory_context: Optional[Dict[str, str]] = None,
+    ) -> Generator[Dict[str, Any], None, None]:
         history = history or []
+        trace = AgentTrace(question=question)
+        self._active_trace = trace
+        apply_mem_ctx(self._memory_fields, memory_context)
+        self.last_photo_urls = []
+
+        logger.info(
+            "==== 收到 query[stream]: %r (history=%d turns) ====", question, len(history)
+        )
 
         try:
-            # Step 1: Rewrite question
+            # Phase 1: Rewrite + Strategy
             yield {"event": "status", "data": {"stage": "thinking", "message": "正在思考中..."}}
-            rewritten_question = self._rewrite_question(question, history)
-
-            # Step 2: Plan which functions to call
-            yield {"event": "status", "data": {"stage": "planning", "message": "正在分析问题..."}}
-            function_calls = self._plan_functions(rewritten_question, question, history)
-
-            # Step 3: Execute functions
-            if function_calls:
-                yield {"event": "status", "data": {"stage": "searching", "message": "正在查找资料..."}}
-                function_results = self._execute_functions(
-                    function_calls, rewritten_question, question
+            with trace.stage("rewrite"):
+                rewritten = rewrite_question(
+                    fast_llm=self.fast_llm,
+                    rewrite_prompt=self._rewrite_prompt,
+                    question=question,
+                    history=history,
+                    guard_config=self._guard_config,
+                    format_history_fn=format_history,
                 )
+
+            with trace.stage("strategy") as stage:
+                strategy_result = self._strategy_selector.select(question)
+                stage.detail = (
+                    ", ".join(strategy_result.strategy_names)
+                    if strategy_result.matched_strategies
+                    else "(none)"
+                )
+
+            # Phase 2: Planning
+            yield {"event": "status", "data": {"stage": "planning", "message": "正在分析问题..."}}
+            with trace.stage("planning"):
+                function_calls = plan_functions(
+                    fast_llm=self.fast_llm,
+                    planning_prompt=self._planning_prompt,
+                    skill_registry=self.skill_registry,
+                    rewritten_question=rewritten,
+                    original_question=question,
+                    history=history,
+                    guard_config=self._guard_config,
+                    max_tool_calls=self._max_tool_calls,
+                    format_history_fn=format_history,
+                )
+
+            # Phase 3: Execute
+            if function_calls:
+                yield {
+                    "event": "status",
+                    "data": {"stage": "searching", "message": "正在查找资料..."},
+                }
+                with trace.stage(
+                    "execute", detail=", ".join(fc.get("tool", "") for fc in function_calls)
+                ):
+                    function_results = execute_functions(
+                        skill_registry=self.skill_registry,
+                        function_calls=function_calls,
+                        rewritten_question=rewritten,
+                        original_question=question,
+                        extract_photo_count_fn=extract_photo_count,
+                    )
             else:
                 function_results = []
 
-            # Step 4: Stream the final answer
-            yield {"event": "status", "data": {"stage": "generating", "message": "正在组织回答..."}}
-            for token_chunk in self._generate_answer_stream(question, history, function_results):
-                yield {"event": "token", "data": {"content": token_chunk}}
+            # Photo payload for SSE
+            photo_payload = extract_photo_payload(function_results)
+            if photo_payload and photo_payload.get("items"):
+                yield {"event": "photos", "data": photo_payload}
+
+            # Phase 4: Stream answer
+            yield {
+                "event": "status",
+                "data": {"stage": "generating", "message": "正在组织回答..."},
+            }
+            with trace.stage("generate"):
+                for token_chunk in generate_answer_stream(
+                    llm=self.llm,
+                    question=question,
+                    history=history,
+                    function_results=function_results,
+                    strategy_result=strategy_result,
+                    guard_config=self._guard_config,
+                    context_manager=getattr(self, "context_manager", None),
+                    memory_fields=self._memory_fields,
+                    history_max_turns=getattr(self.config, "HISTORY_MAX_TURNS", 10),
+                    active_trace=trace,
+                ):
+                    yield {"event": "token", "data": {"content": token_chunk}}
 
             yield {"event": "done", "data": {}}
 
+            trace.set_extra("tools_called", [fc.get("tool") for fc in function_calls])
+            trace.set_extra("strategies", strategy_result.strategy_names)
+            trace.print_summary()
+
         except Exception as exc:
             logger.error("run_stream failed: %s", exc, exc_info=True)
-            yield {"event": "error", "data": {"message": str(exc)}}
-
-    # ------------------------------------------------------------------
-    # Internal steps
-    # ------------------------------------------------------------------
-
-    def _rewrite_question(
-        self, question: str, history: List[Dict[str, str]]
-    ) -> str:
-        """Rewrite the user question for better retrieval."""
-        try:
-            result = (self._rewrite_prompt | self.llm).invoke({
-                "current_question": question,
-                "conversation_history": self._format_history(history),
-            })
-            rewritten = result.content.strip()
-            logger.info("Question rewrite: '%s' → '%s'", question, rewritten)
-            return rewritten
-        except Exception as exc:
-            logger.warning("Question rewrite failed, using original: %s", exc)
-            return question
-
-    def _plan_functions(
-        self,
-        rewritten_question: str,
-        original_question: str,
-        history: List[Dict[str, str]],
-    ) -> List[Dict[str, Any]]:
-        """Ask the LLM which functions to call and with what arguments."""
-        schemas_text = json.dumps(
-            self.skill_registry.get_all_function_schemas(),
-            ensure_ascii=False,
-            indent=2,
-        )
-        try:
-            result = (self._planning_prompt | self.llm).invoke({
-                "tool_schemas": schemas_text,
-                "conversation_history": self._format_history(history),
-                "question": original_question,
-            })
-            raw = result.content.strip()
-            calls = self._parse_function_calls(raw)
-
-            # Enforce max-tool-calls limit
-            if len(calls) > self._max_tool_calls:
-                logger.warning(
-                    "LLM planned %d function calls, truncating to %d",
-                    len(calls), self._max_tool_calls,
-                )
-                calls = calls[: self._max_tool_calls]
-
-            logger.info(
-                "Function planning decided: %s",
-                [c.get("tool") for c in calls],
-            )
-            return calls
-        except Exception as exc:
-            logger.warning(
-                "Function planning failed, falling back to knowledge search: %s", exc
-            )
-            return [
-                {"tool": "search_knowledge_base", "arguments": {"query": rewritten_question}}
-            ]
-
-    def _execute_functions(
-        self,
-        function_calls: List[Dict[str, Any]],
-        rewritten_question: str,
-        original_question: str,
-    ) -> List[FunctionResult]:
-        """Execute all planned function calls via the SkillRegistry."""
-        if not function_calls:
-            logger.info("No functions to call — direct answer mode")
-            return []
-
-        results: List[FunctionResult] = []
-        for fc in function_calls:
-            func_name = fc.get("tool", "")
-            arguments = fc.get("arguments", {})
-
-            # Ensure required 'query' param is present for retrieval functions
-            if func_name in (
-                "search_knowledge_base",
-                "search_concert_schedule",
-            ):
-                if "query" not in arguments or not arguments["query"]:
-                    # LLM omitted the query — fill in with best available
-                    arguments["query"] = rewritten_question
-                    logger.warning(
-                        "Function '%s' missing 'query' arg, auto-filled with: %s",
-                        func_name, rewritten_question,
-                    )
-                else:
-                    # Enhance existing query with rewritten version if available
-                    original_arg = arguments["query"]
-                    arguments["query"] = (
-                        rewritten_question
-                        if rewritten_question != original_question
-                        else original_arg
-                    )
-
-            # Same safeguard for song search
-            if func_name == "search_song_info":
-                if "song_name" not in arguments or not arguments["song_name"]:
-                    arguments["song_name"] = original_question
-                    logger.warning(
-                        "Function '%s' missing 'song_name' arg, auto-filled with: %s",
-                        func_name, original_question,
-                    )
-
-            result = self.skill_registry.invoke(func_name, arguments)
-            results.append(result)
-
-            if result.success:
-                logger.info(
-                    "Function '%s' (skill '%s') succeeded (%d chars)",
-                    func_name, result.skill_name, len(result.data),
-                )
-            else:
-                logger.warning(
-                    "Function '%s' (skill '%s') failed: %s",
-                    func_name, result.skill_name, result.error,
-                )
-
-        return results
-
-    def _generate_answer(
-        self,
-        question: str,
-        history: List[Dict[str, str]],
-        function_results: List[FunctionResult],
-    ) -> str:
-        """Generate the final GEM-persona answer using function results as context."""
-        # Build context from function results
-        if function_results:
-            context_parts = []
-            for fr in function_results:
-                if fr.success and fr.data:
-                    context_parts.append(
-                        f"【{fr.function_name} 返回结果】\n{fr.data}"
-                    )
-                elif not fr.success:
-                    context_parts.append(
-                        f"【{fr.function_name} 调用失败】{fr.error}"
-                    )
-            context_text = "\n\n---\n\n".join(context_parts)
-        else:
-            context_text = "（无需检索资料，直接与粉丝聊天即可）"
-
-        # Extract current time from function results, or generate a fallback
-        current_time = self._extract_current_time(function_results)
-
-        # Build message list
-        messages = [("system", GEM_SYSTEM_PROMPT)]
-
-        # Add history
-        for turn in history[-self.config.HISTORY_MAX_TURNS:]:
-            role = turn.get("role", "")
-            content = turn.get("content", "")
-            if role in ("user", "assistant"):
-                messages.append((role, content))
-
-        # Add current question with context
-        user_message = GEM_USER_PROMPT.format(
-            current_time=current_time,
-            context=context_text,
-            question=question,
-        )
-        messages.append(("user", user_message))
-
-        try:
-            prompt = ChatPromptTemplate.from_messages(messages)
-            response = self.llm.invoke(prompt.invoke({}))
-            return response.content
-        except Exception as exc:
-            logger.error("Answer generation failed: %s", exc, exc_info=True)
-            raise RuntimeError("AI回答生成失败，请稍后重试") from exc
-
-    def _generate_answer_stream(
-        self,
-        question: str,
-        history: List[Dict[str, str]],
-        function_results: List[FunctionResult],
-    ) -> Generator[str, None, None]:
-        """Streaming version of _generate_answer. Yields token strings."""
-        # Build context from function results (same logic as _generate_answer)
-        if function_results:
-            context_parts = []
-            for fr in function_results:
-                if fr.success and fr.data:
-                    context_parts.append(
-                        f"【{fr.function_name} 返回结果】\n{fr.data}"
-                    )
-                elif not fr.success:
-                    context_parts.append(
-                        f"【{fr.function_name} 调用失败】{fr.error}"
-                    )
-            context_text = "\n\n---\n\n".join(context_parts)
-        else:
-            context_text = "（无需检索资料，直接与粉丝聊天即可）"
-
-        current_time = self._extract_current_time(function_results)
-
-        messages = [("system", GEM_SYSTEM_PROMPT)]
-        for turn in history[-self.config.HISTORY_MAX_TURNS:]:
-            role = turn.get("role", "")
-            content = turn.get("content", "")
-            if role in ("user", "assistant"):
-                messages.append((role, content))
-
-        user_message = GEM_USER_PROMPT.format(
-            current_time=current_time,
-            context=context_text,
-            question=question,
-        )
-        messages.append(("user", user_message))
-
-        try:
-            prompt = ChatPromptTemplate.from_messages(messages)
-            # Use .stream() instead of .invoke() for token-by-token output
-            for chunk in self.llm.stream(prompt.invoke({})):
-                if chunk.content:
-                    yield chunk.content
-        except Exception as exc:
-            logger.error("Answer stream generation failed: %s", exc, exc_info=True)
-            raise RuntimeError("AI回答生成失败，请稍后重试") from exc
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _extract_current_time(function_results: List[FunctionResult]) -> str:
-        """Get time from function results if available, otherwise generate it."""
-        for fr in function_results:
-            if fr.function_name == "get_current_datetime" and fr.success:
-                return fr.data
-        return datetime.now().strftime("%Y年%m月%d日 %H:%M")
-
-    @staticmethod
-    def _format_history(history: List[Dict[str, str]]) -> str:
-        """Format conversation history for prompt injection."""
-        if not history:
-            return "无对话历史"
-        parts = []
-        for turn in history:
-            role = turn.get("role", "unknown")
-            content = turn.get("content", "")
-            if role == "user":
-                parts.append(f"粉丝: {content}")
-            elif role == "assistant":
-                parts.append(f"邓紫棋: {content}")
-        return "\n".join(parts)
-
-    @staticmethod
-    def _parse_function_calls(raw: str) -> List[Dict[str, Any]]:
-        """
-        Parse the LLM's JSON output into a list of function call dicts.
-        Handles markdown code fences, duplicated JSON blocks, and minor formatting issues.
-        """
-        cleaned = raw.strip()
-
-        # 策略1: 优先提取 markdown 代码块内的 JSON 内容
-        # 匹配所有 ```json ... ``` 或 ``` ... ``` 代码块
-        fenced_blocks = re.findall(r"```(?:json)?\s*\n?(.*?)\n?\s*```", cleaned, re.DOTALL)
-        
-        # 收集候选 JSON 文本：代码块内容 + 代码块外的裸文本
-        candidates = []
-        
-        if fenced_blocks:
-            # 有代码块时，优先尝试代码块内的内容
-            for block in fenced_blocks:
-                block = block.strip()
-                if block:
-                    candidates.append(block)
-            
-            # 也尝试去掉所有代码块后的裸文本
-            bare_text = re.sub(r"```(?:json)?\s*\n?.*?\n?\s*```", "", cleaned, flags=re.DOTALL).strip()
-            if bare_text:
-                candidates.append(bare_text)
-        else:
-            # 没有代码块，直接用原始清理后的文本
-            candidates.append(cleaned)
-
-        # 策略2: 依次尝试每个候选文本进行 JSON 解析
-        for candidate in candidates:
-            candidate = candidate.strip()
-            if not candidate or candidate == "[]":
-                continue
-
-            try:
-                parsed = json.loads(candidate)
-                return GemAgent._validate_function_calls(parsed)
-            except json.JSONDecodeError:
-                pass
-
-            # 策略3: 如果候选文本包含多行，尝试逐行找第一个有效 JSON
-            # 处理类似 "[]\n[]" 的情况
-            if "\n" in candidate:
-                for line in candidate.split("\n"):
-                    line = line.strip()
-                    if not line or line == "[]":
-                        continue
-                    try:
-                        parsed = json.loads(line)
-                        result = GemAgent._validate_function_calls(parsed)
-                        if result:  # 只返回非空的有效结果
-                            return result
-                    except json.JSONDecodeError:
-                        continue
-
-        # 策略4: 最后兜底 - 尝试用最外层方括号/花括号提取 JSON
-        # 找到第一个 [ 到最后一个 ] 的区间
-        first_bracket = cleaned.find("[")
-        if first_bracket != -1:
-            # 寻找与之匹配的 ]
-            depth = 0
-            for i in range(first_bracket, len(cleaned)):
-                if cleaned[i] == "[":
-                    depth += 1
-                elif cleaned[i] == "]":
-                    depth -= 1
-                    if depth == 0:
-                        json_str = cleaned[first_bracket:i + 1]
-                        try:
-                            parsed = json.loads(json_str)
-                            return GemAgent._validate_function_calls(parsed)
-                        except json.JSONDecodeError:
-                            break
-
-        # 所有候选文本都是空的 "[]"，返回空列表（这不算错误）
-        all_empty = all(
-            c.strip() in ("", "[]") for c in candidates
-        )
-        if not all_empty:
-            logger.warning(
-                "Failed to parse function calls JSON from any candidate.\nRaw: %s",
-                raw[:500],
-            )
-
-        return []
-
-    @staticmethod
-    def _validate_function_calls(parsed) -> List[Dict[str, Any]]:
-        """
-        Validate and normalize parsed JSON into a list of function call dicts.
-        """
-        if isinstance(parsed, list):
-            valid = []
-            for item in parsed:
-                if isinstance(item, dict) and "tool" in item:
-                    if "arguments" not in item:
-                        item["arguments"] = {}
-                    valid.append(item)
-            return valid
-        elif isinstance(parsed, dict) and "tool" in parsed:
-            if "arguments" not in parsed:
-                parsed["arguments"] = {}
-            return [parsed]
-        return []
+            yield {"event": "token", "data": {"content": get_fallback_reply()}}
+            yield {"event": "done", "data": {}}
+        finally:
+            self._active_trace = None
+            apply_mem_ctx(self._memory_fields, None)

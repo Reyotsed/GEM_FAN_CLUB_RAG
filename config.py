@@ -1,24 +1,33 @@
-import os
+"""Backward-compatible config shim.
+
+Historically this module exposed flat module-level constants (e.g.
+``config.ZHIPUAI_API_KEY``). All new code should use ``app.core.settings``
+directly, but to avoid touching 30+ call sites in ``agent/`` and
+``rag_modules/`` we keep this file as a thin re-export layer that derives its
+values from the new ``Settings`` singleton.
+"""
+from __future__ import annotations
+
 import logging
-from typing import Optional, List
+from typing import List
+
 from dotenv import load_dotenv
 
-# 加载环境变量
+# Load .env early so direct ``os.getenv`` callers (legacy) still work.
 load_dotenv()
 
-# ==================== 智谱AI配置 ====================
-# 优先从环境变量读取，如果没有则使用默认值（仅用于开发测试）
-ZHIPUAI_API_KEY: str = os.getenv(
-    "ZHIPUAI_API_KEY", 
-    ""  # 默认值为空，强制使用环境变量
-)
-ZHIPUAI_MODEL: str = os.getenv("ZHIPUAI_MODEL", "glm-4.7")
-ZHIPUAI_EMBEDDING_MODEL: str = os.getenv("ZHIPUAI_EMBEDDING_MODEL", "embedding-3")
-ZHIPUAI_TEMPERATURE: float = float(os.getenv("ZHIPUAI_TEMPERATURE", "0.8"))
-# API请求超时时间（秒），glm-4.7推理时间较长，建议设置为60秒或更高
-ZHIPUAI_TIMEOUT: float = float(os.getenv("ZHIPUAI_TIMEOUT", "120"))
+from app.core.settings import get_settings  # noqa: E402
 
-# 验证API密钥是否已设置
+_s = get_settings()
+
+# ==================== 智谱AI配置 ====================
+ZHIPUAI_API_KEY: str = _s.llm.api_key
+ZHIPUAI_MODEL: str = _s.llm.model
+ZHIPUAI_EMBEDDING_MODEL: str = _s.llm.embedding_model
+ZHIPUAI_TEMPERATURE: float = _s.llm.temperature
+ZHIPUAI_TIMEOUT: float = _s.llm.timeout
+
+# Validation already happened in get_settings(); kept for parity.
 if not ZHIPUAI_API_KEY:
     raise ValueError(
         "错误：请设置 ZHIPUAI_API_KEY 环境变量。\n"
@@ -27,77 +36,58 @@ if not ZHIPUAI_API_KEY:
     )
 
 # ==================== 数据路径配置 ====================
-DATA_PATH: str = os.getenv("DATA_PATH", "./gem_data")
-CHROMA_PATH: str = os.getenv("CHROMA_PATH", "./chroma_db_zhipu")
-HOT_SONG_PATH: str = os.getenv("HOT_SONG_PATH", "./hot_song.json")
+DATA_PATH: str = _s.retriever.data_path
+CHROMA_PATH: str = _s.retriever.chroma_path
+HOT_SONG_PATH: str = _s.retriever.hot_song_path
 
 # ==================== 日志配置 ====================
-# 日志级别：DEBUG, INFO, WARNING, ERROR, CRITICAL
-LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
-LOG_FILE: str = os.getenv("LOG_FILE", "rag_server.log")
-LOG_FORMAT: str = os.getenv(
-    "LOG_FORMAT",
-    "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
+LOG_LEVEL: str = _s.observability.log_level
+LOG_FILE: str = _s.observability.log_file
+LOG_FORMAT: str = _s.observability.log_format
 
-# 将字符串日志级别转换为logging常量
 LOG_LEVEL_MAP = {
     "DEBUG": logging.DEBUG,
     "INFO": logging.INFO,
     "WARNING": logging.WARNING,
     "ERROR": logging.ERROR,
-    "CRITICAL": logging.CRITICAL
+    "CRITICAL": logging.CRITICAL,
 }
-LOG_LEVEL_VALUE: int = LOG_LEVEL_MAP.get(LOG_LEVEL, logging.INFO)
+LOG_LEVEL_VALUE: int = _s.observability.log_level_value
 
 # ==================== 检索器配置 ====================
-# 向量检索器返回的文档数量
-VECTOR_RETRIEVER_K: int = int(os.getenv("VECTOR_RETRIEVER_K", "10"))
-# BM25检索器返回的文档数量
-BM25_RETRIEVER_K: int = int(os.getenv("BM25_RETRIEVER_K", "10"))
-# 混合检索器最终返回的文档数量
-HYBRID_RETRIEVER_NUM_RESULTS: int = int(os.getenv("HYBRID_RETRIEVER_NUM_RESULTS", "5"))
-# RRF (Reciprocal Rank Fusion) 常数，用于混合检索器重排序
-RRF_K: int = int(os.getenv("RRF_K", "60"))
-# Maximum number of conversation history turns to include in LLM context
-HISTORY_MAX_TURNS: int = int(os.getenv("HISTORY_MAX_TURNS", "5"))
+VECTOR_RETRIEVER_K: int = _s.retriever.vector_retriever_k
+BM25_RETRIEVER_K: int = _s.retriever.bm25_retriever_k
+HYBRID_RETRIEVER_NUM_RESULTS: int = _s.retriever.hybrid_retriever_num_results
+RRF_K: int = _s.retriever.rrf_k
+HISTORY_MAX_TURNS: int = _s.retriever.history_max_turns
 
 # ==================== Agent 配置 ====================
-# Agent planning step uses a lower temperature for more deterministic tool selection
-AGENT_PLANNING_TEMPERATURE: float = float(os.getenv("AGENT_PLANNING_TEMPERATURE", "0.1"))
-# Maximum number of tools the agent can call in a single turn
-AGENT_MAX_TOOL_CALLS: int = int(os.getenv("AGENT_MAX_TOOL_CALLS", "3"))
+AGENT_PLANNING_TEMPERATURE: float = _s.agent.planning_temperature
+AGENT_MAX_TOOL_CALLS: int = _s.agent.max_tool_calls
+AGENT_LLM_MAX_RETRIES: int = _s.agent.llm_max_retries
+AGENT_PLANNING_MAX_RETRIES: int = _s.agent.planning_max_retries
 
 # ==================== 数据准备配置 ====================
-# 向量数据库创建时的批次大小
-VECTOR_DB_BATCH_SIZE: int = int(os.getenv("VECTOR_DB_BATCH_SIZE", "50"))
+VECTOR_DB_BATCH_SIZE: int = _s.retriever.vector_db_batch_size
+
+# ==================== 实时网络检索配置（Tavily） ====================
+TAVILY_API_KEY: str = _s.agent.tavily_api_key
+TAVILY_MAX_RESULTS: int = _s.agent.tavily_max_results
+TAVILY_SEARCH_DEPTH: str = _s.agent.tavily_search_depth
+TAVILY_TIMEOUT: float = _s.agent.tavily_timeout
 
 # ==================== CORS配置 ====================
-# 从环境变量读取允许的来源，如果没有则使用默认值（仅开发环境）
-CORS_ORIGINS: List[str] = os.getenv(
-    "CORS_ORIGINS", 
-    "http://localhost:3000,http://localhost:8080,http://localhost:5173,http://localhost:7071,http://gemfanclub.com,https://gemfanclub.com,http://www.gemfanclub.com,https://www.gemfanclub.com,http://140.143.246.54,http://140.143.246.54:7071,https://localhost,capacitor://localhost,http://localhost"
-).split(",")
-# CORS是否允许凭证
-CORS_ALLOW_CREDENTIALS: bool = os.getenv("CORS_ALLOW_CREDENTIALS", "true").lower() == "true"
-# CORS允许的HTTP方法
-CORS_ALLOW_METHODS: str = os.getenv("CORS_ALLOW_METHODS", "*")
-CORS_ALLOW_METHODS_LIST: List[str] = (
-    ["*"] if CORS_ALLOW_METHODS == "*" else CORS_ALLOW_METHODS.split(",")
-)
-# CORS允许的HTTP头
-CORS_ALLOW_HEADERS: str = os.getenv("CORS_ALLOW_HEADERS", "*")
-CORS_ALLOW_HEADERS_LIST: List[str] = (
-    ["*"] if CORS_ALLOW_HEADERS == "*" else CORS_ALLOW_HEADERS.split(",")
-)
+CORS_ORIGINS: List[str] = _s.server.cors_origins
+CORS_ALLOW_CREDENTIALS: bool = _s.server.cors_allow_credentials
+CORS_ALLOW_METHODS: str = _s.server.cors_allow_methods_raw
+CORS_ALLOW_METHODS_LIST: List[str] = _s.server.cors_allow_methods
+CORS_ALLOW_HEADERS: str = _s.server.cors_allow_headers_raw
+CORS_ALLOW_HEADERS_LIST: List[str] = _s.server.cors_allow_headers
 
 # ==================== FastAPI配置 ====================
-API_TITLE: str = os.getenv("API_TITLE", "G.E.M. AI Chat API")
-API_DESCRIPTION: str = os.getenv(
-    "API_DESCRIPTION",
-    "一个由智谱AI驱动、模仿邓紫棋语气的RAG聊天机器人API"
-)
+API_TITLE: str = _s.server.api_title
+API_DESCRIPTION: str = _s.server.api_description
 
 # ==================== 服务器配置 ====================
-HOST: str = os.getenv("HOST", "0.0.0.0")
-PORT: int = int(os.getenv("PORT", "8000"))
+HOST: str = _s.server.host
+PORT: int = _s.server.port
